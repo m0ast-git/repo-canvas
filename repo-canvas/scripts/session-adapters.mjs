@@ -1,6 +1,8 @@
 import { listCodexSessionFiles, readSessionMeta, sessionBelongsToRepository, sessionSignals } from "./codex-sessions.mjs";
 import { claudeSessionAdapter } from "./claude-sessions.mjs";
 import { kimiSessionAdapter } from "./kimi-sessions.mjs";
+import { qwenSessionAdapter } from "./qwen-sessions.mjs";
+import { grokSessionAdapter } from "./grok-sessions.mjs";
 
 function codexLocator(meta, firstUserMessage = "") {
   return {
@@ -24,6 +26,8 @@ const adapters = new Map([
   [codexSessionAdapter.id, codexSessionAdapter],
   [claudeSessionAdapter.id, claudeSessionAdapter],
   [kimiSessionAdapter.id, kimiSessionAdapter],
+  [qwenSessionAdapter.id, qwenSessionAdapter],
+  [grokSessionAdapter.id, grokSessionAdapter],
 ]);
 
 export function sessionAdapter(id) {
@@ -32,6 +36,6 @@ export function sessionAdapter(id) {
   return adapter;
 }
 
-export function sessionAdapters(ids = ["codex", "claude", "kimi"]) {
+export function sessionAdapters(ids = ["codex", "claude", "kimi", "qwen", "grok"]) {
   return [...new Set(ids)].map(sessionAdapter);
 }

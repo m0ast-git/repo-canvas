@@ -165,13 +165,13 @@ if (args.root === true) {
           effort: args.effort && args.effort !== true ? String(args.effort) : undefined,
         });
       }
-      const observer = writeRuntimeConfig({ enabled: true, providers: ["codex", "claude", "kimi"] });
+      const observer = writeRuntimeConfig({ enabled: true, providers: ["codex", "claude", "kimi", "qwen", "grok"] });
       console.log(JSON.stringify({ ok: true, probe, architect, observer }, null, 2));
     } else if (command === "observer") {
       const action = args._[0] || "status";
       const { readRuntimeConfig, writeRuntimeConfig } = await import("./runtime-config.mjs");
       if (action === "enable") {
-        console.log(JSON.stringify(writeRuntimeConfig({ enabled: true, providers: ["codex", "claude", "kimi"] }), null, 2));
+        console.log(JSON.stringify(writeRuntimeConfig({ enabled: true, providers: ["codex", "claude", "kimi", "qwen", "grok"] }), null, 2));
       } else if (action === "disable") {
         console.log(JSON.stringify(writeRuntimeConfig({ enabled: false }), null, 2));
       } else if (action === "status") {

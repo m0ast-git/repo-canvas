@@ -288,6 +288,8 @@ test("session locators stay structured and Codex Desktop binds automatically", (
   });
   assert.equal(resolveSessionTarget({ kind: "kimi-app", title: "Probe" }).exact, false);
   assert.equal(resolveSessionTarget({ kind: "kimi-cli", id: "session_123" }).command, "kimi -r session_123");
+  assert.equal(resolveSessionTarget({ kind: "qwen-cli", id: "session_123" }).command, "qwen --resume session_123");
+  assert.equal(resolveSessionTarget({ kind: "grok-cli", id: "session_123" }).command, "grok --resume session_123");
   assert.equal(resolveSessionTarget({ kind: "unsupported", id: "x" }), null);
   assert.throws(() => resolveSessionTarget({ kind: "codex-app", id: "x; calc.exe" }), /Invalid codex-app session id/);
 });

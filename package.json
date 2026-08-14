@@ -1,7 +1,7 @@
 {
   "name": "repo-canvas",
-  "version": "0.8.2",
-  "description": "A local semantic repository map with live Codex, Claude Code and Kimi Code work",
+  "version": "0.8.2-qwen-grok.0",
+  "description": "A local semantic repository map with live Codex, Claude Code, Kimi Code, Qwen Code and Grok work",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -43,7 +43,9 @@
     "visualization",
     "codex",
     "claude",
-    "kimi"
+    "kimi",
+    "qwen",
+    "grok"
   ],
   "dependencies": {
     "@openai/codex-sdk": "0.147.0"

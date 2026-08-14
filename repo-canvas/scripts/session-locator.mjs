@@ -46,6 +46,8 @@ export function resolveSessionTarget(locator) {
     "codex-cli": { binary: "codex", args: ["resume", id], label: "Codex CLI" },
     "claude-cli": { binary: "claude", args: ["--resume", id], label: "Claude Code" },
     "kimi-cli": { binary: "kimi", args: ["-r", id], label: "Kimi CLI" },
+    "qwen-cli": { binary: "qwen", args: ["--resume", id], label: "Qwen Code" },
+    "grok-cli": { binary: "grok", args: ["--resume", id], label: "Grok" },
   };
   const command = commands[locator.kind];
   return {

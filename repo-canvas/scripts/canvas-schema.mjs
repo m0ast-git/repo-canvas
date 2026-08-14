@@ -2,7 +2,7 @@ export const ENTITY_STATUSES = new Set(["operational", "disabled", "problem", "p
 export const WORK_STATUSES = new Set(["planned", "active", "blocked", "done", "stopped"]);
 export const ACTIVITY_LEVELS = new Set(["info", "success", "warning", "error"]);
 export const SESSION_SURFACES = new Set([
-  "codex-app", "claude-app", "kimi-app", "codex-cli", "claude-cli", "kimi-cli",
+  "codex-app", "claude-app", "kimi-app", "codex-cli", "claude-cli", "kimi-cli", "qwen-cli", "grok-cli",
 ]);
 export const EVENT_TYPES = new Set([
   "area.upsert", "area.remove", "entity.upsert", "entity.remove",

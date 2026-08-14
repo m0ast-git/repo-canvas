@@ -7,21 +7,29 @@ import test from "node:test";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-adapters-"));
 const claudeHome = path.join(root, "claude-home");
 const kimiHome = path.join(root, "kimi-home");
+const qwenHome = path.join(root, "qwen-home");
+const grokHome = path.join(root, "grok-home");
 const repo = path.join(root, "repo");
 const unrelated = path.join(root, "unrelated");
 fs.mkdirSync(repo, { recursive: true });
 fs.mkdirSync(unrelated, { recursive: true });
 fs.mkdirSync(path.join(claudeHome, "projects", "fixture"), { recursive: true });
 fs.mkdirSync(kimiHome, { recursive: true });
+fs.mkdirSync(qwenHome, { recursive: true });
+fs.mkdirSync(grokHome, { recursive: true });
 
 process.env.REPO_CANVAS_ROOT = repo;
 process.env.REPO_CANVAS_DATA_DIR = path.join(root, "data");
 process.env.REPO_CANVAS_CLAUDE_HOME = claudeHome;
 process.env.REPO_CANVAS_KIMI_HOME = kimiHome;
+process.env.REPO_CANVAS_QWEN_HOME = qwenHome;
+process.env.REPO_CANVAS_GROK_HOME = grokHome;
 
 const store = await import("../repo-canvas/scripts/canvas-store.mjs");
 const claude = await import("../repo-canvas/scripts/claude-sessions.mjs");
 const kimi = await import("../repo-canvas/scripts/kimi-sessions.mjs");
+const qwen = await import("../repo-canvas/scripts/qwen-sessions.mjs");
+const grok = await import("../repo-canvas/scripts/grok-sessions.mjs");
 const { SessionObserver } = await import("../repo-canvas/scripts/observer.mjs");
 const { claudeSessionAdapter } = claude;
 const { kimiSessionAdapter } = kimi;
@@ -72,6 +80,40 @@ test("Kimi adapter exposes public text and tools but ignores think and results",
   assert.deepEqual(resultSignals, []);
   assert.equal(kimi.kimiSessionSignals({ type: "context.append_loop_event", event: { type: "step.end", finishReason: "end_turn", turnId: 2 } })[0].kind, "complete");
   assert.equal(kimi.kimiSessionLocator({ id: "session_1", cwd: repo }).kind, "kimi-cli");
+});
+
+test("Qwen adapter exposes public text and tools but ignores thoughts and results", () => {
+  const user = qwen.qwenSessionSignals({
+    type: "user", uuid: "qwen-turn", timestamp: "2026-08-13T00:00:00Z", cwd: repo,
+    message: { parts: [{ text: "Update Qwen module" }] },
+  });
+  const assistant = qwen.qwenSessionSignals({
+    type: "assistant", timestamp: "2026-08-13T00:00:01Z", message: { parts: [
+      { text: "private", thought: true },
+      { text: "Public update" },
+      { functionCall: { name: "Edit", args: { file_path: "src/a.js" } } },
+    ] },
+  });
+  assert.deepEqual(user.map((item) => item.kind), ["start", "user", "context"]);
+  assert.deepEqual(assistant.map((item) => item.kind), ["agent", "tool"]);
+  assert.ok(!JSON.stringify(assistant).includes("private"));
+  assert.deepEqual(qwen.qwenSessionSignals({ type: "tool_result", message: { parts: [{ text: "secret" }] } }), []);
+  assert.equal(qwen.qwenSessionLocator({ id: "qwen-1", cwd: repo }).kind, "qwen-cli");
+});
+
+test("Grok adapter exposes public text and tools but ignores reasoning, results and synthetic users", () => {
+  const user = grok.grokSessionSignals({
+    type: "user", prompt_index: 4, content: [{ type: "text", text: "Update Grok module" }],
+  });
+  const assistant = grok.grokSessionSignals({
+    type: "assistant", content: "Public update", tool_calls: [{ name: "Edit", arguments: { file_path: "src/a.js" } }],
+  });
+  assert.deepEqual(user.map((item) => item.kind), ["start", "user", "context"]);
+  assert.deepEqual(assistant.map((item) => item.kind), ["agent", "tool"]);
+  assert.deepEqual(grok.grokSessionSignals({ type: "reasoning", summary: "private" }), []);
+  assert.deepEqual(grok.grokSessionSignals({ type: "tool_result", content: "secret" }), []);
+  assert.deepEqual(grok.grokSessionSignals({ type: "user", synthetic_reason: "internal", content: [{ type: "text", text: "secret" }] }), []);
+  assert.equal(grok.grokSessionLocator({ id: "grok-1", cwd: repo }).kind, "grok-cli");
 });
 
 test("one observer tracks Claude and Kimi sessions only for the selected repository", async () => {

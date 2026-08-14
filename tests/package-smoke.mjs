@@ -82,6 +82,7 @@ function waitFor(child, pattern, timeoutMs = 5_000) {
 
 try {
   fs.mkdirSync(path.join(root, ".git"));
+  fs.writeFileSync(path.join(root, "package.json"), `${JSON.stringify({ private: true }, null, 2)}\n`);
   fs.mkdirSync(path.join(root, "src"));
   fs.writeFileSync(path.join(root, "pyproject.toml"), "[project]\nname = \"existing-python-project\"\nversion = \"1.0.0\"\n");
   fs.writeFileSync(path.join(root, "src", "app.py"), "print('existing product code')\n");
@@ -92,7 +93,7 @@ try {
       SessionStart: [{ hooks: [{ type: "command", command: "owner-command", timeout: 10 }] }],
     },
   }, null, 2)}\n`);
-  assert.ok(!fs.existsSync(path.join(root, "package.json")), "Fixture must begin without an npm manifest");
+  assert.ok(fs.existsSync(path.join(root, "package.json")), "Fixture must begin with a repository-local tooling manifest");
   const ownerAgents = fs.readFileSync(path.join(root, "AGENTS.md"));
   const ownerHooks = fs.readFileSync(path.join(root, ".codex", "hooks.json"));
 
@@ -108,13 +109,15 @@ try {
     run(npmCommand, [...npmPrefix, "install", "--save-dev", "--save-exact", "--ignore-scripts", localTarball], fixture);
   }
 
-  assert.ok(fs.existsSync(path.join(root, "package.json")), "npm did not create a minimal tooling manifest");
+  assert.ok(fs.existsSync(path.join(root, "package.json")), "npm removed the tooling manifest");
   assert.equal(fs.readFileSync(path.join(root, "src", "app.py"), "utf8"), "print('existing product code')\n");
 
   const installedCli = path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "canvas.mjs");
   assert.ok(fs.existsSync(installedCli), "CLI source missing from packed artifact");
   assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "claude-sessions.mjs")));
   assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "kimi-sessions.mjs")));
+  assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "qwen-sessions.mjs")));
+  assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "grok-sessions.mjs")));
   assert.ok(fs.existsSync(path.join(root, "node_modules", ".bin", process.platform === "win32" ? "repo-canvas.cmd" : "repo-canvas")));
   run(process.execPath, [installedCli, "init"], root);
   const managedFiles = ["package.json", "package-lock.json", "AGENTS.md", ".gitignore", ".codex/hooks.json"];

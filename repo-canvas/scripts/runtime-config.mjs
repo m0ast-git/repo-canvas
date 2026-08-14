@@ -26,7 +26,7 @@ export function readRuntimeConfig() {
     };
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    return { enabled: false, repoRoot: fs.realpathSync.native(projectRoot), providers: ["codex", "claude", "kimi"], pollMs: 750 };
+    return { enabled: false, repoRoot: fs.realpathSync.native(projectRoot), providers: ["codex", "claude", "kimi", "qwen", "grok"], pollMs: 750 };
   }
 }
 

@@ -84,7 +84,7 @@ export class CodexObserver {
     this.runner = runner;
     this.now = now;
     this.sessionsRoot = sessionsRoot;
-    const configured = config.providers || (config.provider ? [config.provider] : ["codex", "claude", "kimi"]);
+    const configured = config.providers || (config.provider ? [config.provider] : ["codex", "claude", "kimi", "qwen", "grok"]);
     this.adapters = adapters || (sessionsRoot ? [sessionAdapter("codex")] : sessionAdapters(configured));
     this.replay = replay;
     this.gitCache = new Map();
