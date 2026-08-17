@@ -179,6 +179,43 @@ test("architect rejects relations to entities removed by the same refresh", () =
   }), /Unknown relation endpoint/);
 });
 
+test("architect emits a DDD hierarchy, explanatory contracts, key flows, and map composition", () => {
+  const model = {
+    projectTitle: "Order platform", projectSummary: "Accepts and fulfils customer orders",
+    layoutIntent: "flow", layoutDirection: "RIGHT",
+    keyFlows: [{ id: "order-to-cash", title: "Order to cash", trigger: "customer submits order", outcome: "order is fulfilled", steps: ["sales", "checkout", "fulfilment"] }],
+    unresolvedQuestions: ["Who owns manual refunds?"],
+    areas: [
+      { id: "sales-domain", title: "Sales", note: "Owns commercial intent", color: "#ef9a72", evidence: ["src/sales"], order: 1 },
+      { id: "ops-domain", title: "Operations", note: "Owns fulfilment", color: "#73bca4", evidence: ["src/ops"], order: 2 },
+    ],
+    entities: [
+      { id: "sales", areaId: "sales-domain", parentId: "", label: "Sales capability", kind: "capability", status: "operational", path: "src/sales", purpose: "Accept commercial intent", note: "", evidence: ["src/sales/index.ts"], order: 1 },
+      { id: "checkout", areaId: "sales-domain", parentId: "sales", label: "Checkout", kind: "process", status: "operational", path: "src/sales/checkout", purpose: "Turn a cart into an accepted order", note: "", evidence: ["src/sales/checkout.ts"], order: 2 },
+      { id: "fulfilment", areaId: "ops-domain", parentId: "", label: "Fulfilment", kind: "capability", status: "operational", path: "src/ops", purpose: "Deliver accepted orders", note: "", evidence: ["src/ops/index.ts"], order: 1 },
+    ],
+    relations: [{ id: "checkout-to-fulfilment", from: "checkout", to: "fulfilment", label: "publishes accepted order", kind: "event", contract: "AcceptedOrder v1", mechanism: "event bus", evidence: ["src/contracts/accepted-order.ts"], status: "existing" }],
+    removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
+  };
+  const events = semantic.architectureEvents(model, { actor: "architect-test" });
+  assert.equal(events[0].type, "map.upsert");
+  assert.deepEqual(events[0].payload.keyFlows[0].steps, ["sales", "checkout", "fulfilment"]);
+  assert.ok(events.findIndex((event) => event.payload.id === "sales") < events.findIndex((event) => event.payload.id === "checkout"));
+  assert.equal(events.find((event) => event.type === "relation.upsert").payload.label, "publishes accepted order");
+  for (const event of events) assert.deepEqual(schema.validateEvent(event), []);
+});
+
+test("architect rejects hierarchy cycles and cross-domain parents", () => {
+  const base = {
+    projectTitle: "Fixture", projectSummary: "", layoutIntent: "domain", layoutDirection: "AUTO", keyFlows: [], unresolvedQuestions: [],
+    areas: [{ id: "a", title: "A", note: "", color: "#ef9a72", evidence: [], order: 1 }, { id: "b", title: "B", note: "", color: "#73bca4", evidence: [], order: 2 }],
+    relations: [], removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
+  };
+  const entity = (id, areaId, parentId) => ({ id, areaId, parentId, label: id, kind: "module", status: "operational", path: "", purpose: "fixture", note: "", evidence: [], order: 1 });
+  assert.throws(() => semantic.validateArchitecture({ ...base, entities: [entity("cycle-a", "a", "cycle-b"), entity("cycle-b", "a", "cycle-a")] }), /cycle/);
+  assert.throws(() => semantic.validateArchitecture({ ...base, entities: [entity("parent-a", "a", ""), entity("child-b", "b", "parent-a")] }), /another area/);
+});
+
 test("completed observer work may remain provisional when no semantic target was established", () => {
   const [event] = semantic.observerEvents({
     workTitle: "Repository-wide review", workSummary: "No single semantic target was established",

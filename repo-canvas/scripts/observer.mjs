@@ -20,22 +20,26 @@ function workId(sessionId, turnId) {
 
 function compactMap(snapshot) {
   return {
+    map: { projectTitle: snapshot.map?.projectTitle, keyFlows: snapshot.map?.keyFlows || [] },
     areas: snapshot.areas.map(({ id, title, note }) => ({ id, title, note })),
-    entities: snapshot.entities.map(({ id, areaId, label, status, purpose }) => ({ id, areaId, label, status, purpose })),
-    relations: snapshot.relations.map(({ id, from, to, label, status }) => ({ id, from, to, label, status })),
+    entities: snapshot.entities.map(({ id, areaId, parentId, label, kind, status, purpose, evidence }) => ({ id, areaId, parentId, label, kind, status, purpose, evidence })),
+    relations: snapshot.relations.map(({ id, from, to, label, kind, contract, mechanism, status }) => ({ id, from, to, label, kind, contract, mechanism, status })),
   };
 }
 
 export function observerPrompt({ turn, final, snapshot }) {
   return `You are Repo Canvas Observer, a silent semantic stenographer. Interpret one coding-agent turn and update an existing high-level project map.
 
-You never inspect the repository, never write code, never answer the owner and never invent explanations. Use only the supplied public session events and current semantic map. Hidden reasoning is unavailable and irrelevant.
+You never inspect the repository, never write code, never answer the owner and never invent explanations. Use only supplied public session events and the current evidence-backed semantic map. Hidden reasoning is unavailable and irrelevant.
 
 Rules:
 - describe the concrete work in a short title and summary;
 - attach work to every existing semantic entity it genuinely affects;
-- during active work, new approved concepts may be created as planned entities and planned relations;
-- at completion, update passports and relations only when the session provides enough evidence;
+- target the most specific confirmed entity; the UI rolls activity up to visible parents and areas;
+- during active work, create a planned entity or relation only when the owner or working agent explicitly establishes the new concept, responsibility and endpoints;
+- at completion, update passports and relations only when public session evidence establishes the architectural effect;
+- keep the Architect's entity kinds, parent hierarchy and relation grammar;
+- every new relation label must be a specific directional verb plus object; include the contract, mechanism and public-session evidence available;
 - removing a file is not enough to remove an entity;
 - remove an entity only when the session establishes that the concept itself was eliminated or merged away;
 - rename, move or reimplementation keeps the stable entity id;

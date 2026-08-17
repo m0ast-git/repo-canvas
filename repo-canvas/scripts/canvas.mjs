@@ -82,6 +82,7 @@ function printHelp() {
 Commands:
   init        Initialize local runtime scripts and ignored state
   start       Run the foreground loopback canvas server
+  map         Upsert the project viewpoint and key end-to-end flows
   area        Upsert a large semantic project area
   entity      Upsert a persistent module or responsibility
   relation    Upsert a structural relation between entities
@@ -103,6 +104,7 @@ Global options:
 Examples:
   repo-canvas init
   repo-canvas start
+  repo-canvas map --title "Order platform" --layout flow --direction RIGHT --flows "order-to-cash,refund"
   repo-canvas area --id knowledge --title "Knowledge base" --order 1
   repo-canvas entity --id search --area knowledge --label "Standards search" --status operational --path src/search
   repo-canvas relation --from search --to registry --label "reads"
@@ -204,11 +206,21 @@ if (args.root === true) {
         console.log(JSON.stringify(event, null, 2));
       };
 
-      if (command === "area") {
+      if (command === "map") {
+        emit("map.upsert", args.actor || "unknown", {
+          projectTitle: required(args, "title"),
+          projectSummary: args.summary || "",
+          layoutIntent: args.layout || "domain",
+          layoutDirection: args.direction || "AUTO",
+          keyFlows: list(args.flows),
+        });
+      } else if (command === "area") {
         emit("area.upsert", args.actor || "unknown", {
           id: required(args, "id"),
           title: required(args, "title"),
           note: args.note || "",
+          color: args.color,
+          evidence: list(args.evidence),
           x: optionalNumber(args.x), y: optionalNumber(args.y),
           width: optionalNumber(args.width), height: optionalNumber(args.height),
           order: optionalNumber(args.order),
@@ -222,6 +234,9 @@ if (args.root === true) {
           path: args.path || "",
           purpose: args.purpose || "",
           note: args.note || "",
+          parentId: args.parent,
+          kind: args.kind || "module",
+          evidence: list(args.evidence),
           inputs: list(args.inputs), outputs: list(args.outputs), dependsOn: list(args.depends),
           x: optionalNumber(args.x), y: optionalNumber(args.y), order: optionalNumber(args.order),
         });
@@ -233,6 +248,10 @@ if (args.root === true) {
           from, to,
           label: args.label || "",
           status: args.status || "existing",
+          kind: args.kind || "dependency",
+          contract: args.contract || "",
+          mechanism: args.mechanism || "",
+          evidence: list(args.evidence),
         });
       } else if (command === "work") {
         const status = args.status || "planned";

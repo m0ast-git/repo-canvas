@@ -61,7 +61,7 @@ function request(port, requestPath, token = "") {
     http.get({ host: "127.0.0.1", port, path: requestPath, headers }, (response) => {
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString("utf8") }));
     }).once("error", reject);
   });
 }
@@ -118,6 +118,18 @@ try {
   assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "claude-sessions.mjs")));
   assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "kimi-sessions.mjs")));
   assert.ok(fs.existsSync(path.join(root, "node_modules", ".bin", process.platform === "win32" ? "repo-canvas.cmd" : "repo-canvas")));
+  const installedPublic = path.join(root, "node_modules", "repo-canvas", "public");
+  const installedIndex = fs.readFileSync(path.join(installedPublic, "index.html"), "utf8");
+  const assetReferences = [...installedIndex.matchAll(/(?:src|href)="(\/assets\/[^\"]+)"/g)].map((match) => match[1]);
+  assert.ok(assetReferences.some((asset) => asset.endsWith(".js")), "Packed browser build does not reference JavaScript");
+  assert.ok(assetReferences.some((asset) => asset.endsWith(".css")), "Packed browser build does not reference CSS");
+  for (const asset of assetReferences) assert.ok(fs.existsSync(path.join(installedPublic, asset.replace(/^\//, ""))), `Packed browser asset missing: ${asset}`);
+  const packedAssets = fs.readdirSync(path.join(installedPublic, "assets"));
+  assert.ok(packedAssets.some((name) => name.startsWith("layout-worker-") && name.endsWith(".js")), "Packed layout worker missing");
+  assert.ok(packedAssets.some((name) => name.startsWith("elk-worker.min-") && name.endsWith(".js")), "Packed ELK worker missing");
+  const libavoidWasm = packedAssets.find((name) => name.startsWith("libavoid-") && name.endsWith(".wasm"));
+  assert.ok(libavoidWasm, "Packed libavoid WASM runtime missing");
+  assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "THIRD_PARTY_NOTICES.md")), "Third-party routing notice missing");
   run(process.execPath, [installedCli, "init"], root);
   const managedFiles = ["package.json", "package-lock.json", "AGENTS.md", ".gitignore", ".codex/hooks.json"];
   const firstHash = hashFiles(root, managedFiles);
@@ -158,15 +170,18 @@ try {
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
-    const startedOutput = await waitFor(server, /listening at/);
-    const apiToken = startedOutput.match(/#token=([A-Za-z0-9_-]{43})/)?.[1];
-    assert.ok(apiToken, `Server did not print a per-launch API token: ${startedOutput}`);
+    await waitFor(server, /listening at/);
+    const apiToken = fs.readFileSync(path.join(root, ".repo-canvas", "api-token"), "utf8").trim();
+    assert.match(apiToken, /^[A-Za-z0-9_-]{43}$/);
     const health = await request(port, "/api/health", apiToken);
     assert.equal(health.status, 200);
     assert.equal(JSON.parse(health.body).root, fs.realpathSync.native(root));
     const page = await request(port, "/");
     assert.equal(page.status, 200);
     assert.match(page.body, /Repo Canvas/);
+    const wasm = await request(port, `/assets/${libavoidWasm}`);
+    assert.equal(wasm.status, 200);
+    assert.equal(wasm.headers["content-type"], "application/wasm");
   } finally {
     server.kill("SIGTERM");
   }

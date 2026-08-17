@@ -1,6 +1,6 @@
 {
   "name": "repo-canvas",
-  "version": "0.8.9",
+  "version": "0.9.0",
   "description": "A local semantic repository map with live Codex, Claude Code and Kimi Code work",
   "type": "module",
   "license": "MIT",
@@ -20,12 +20,14 @@
     "repo-canvas",
     "server.mjs",
     "README.md",
-    "INSTALL_WITH_AGENT.txt"
+    "INSTALL_WITH_AGENT.txt",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
+    "build": "vite build",
     "start": "node server.mjs",
     "repo-canvas": "node repo-canvas/scripts/canvas.mjs",
     "repo-canvas:start": "node repo-canvas/scripts/canvas.mjs start",
@@ -47,6 +49,15 @@
     "kimi"
   ],
   "dependencies": {
-    "@openai/codex-sdk": "0.147.0"
+    "@mr_mint/elkjs-libavoid": "0.5.0",
+    "@openai/codex-sdk": "0.147.0",
+    "@xyflow/react": "^12.11.3",
+    "elkjs": "^0.12.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.5",
+    "vite": "^8.2.1"
   }
 }

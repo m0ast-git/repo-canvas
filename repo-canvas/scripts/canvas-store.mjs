@@ -254,6 +254,7 @@ function naturalCompare(a, b) {
 
 function activityLabel(event) {
   const payload = event.payload || {};
+  if (event.type === "map.upsert") return `Project map ${payload.projectTitle || "updated"}`;
   if (event.type === "activity.log") return payload.message || "Activity recorded";
   if (event.type === "area.upsert") return `Area ${payload.ownerTitle || payload.title || payload.id} updated`;
   if (event.type === "area.remove") return `Area ${payload.id} removed: ${payload.reason || "no longer exists"}`;
@@ -266,6 +267,7 @@ function activityLabel(event) {
 }
 
 export function reduceEvents(events, errors = []) {
+  let map = null;
   const areas = new Map();
   const entities = new Map();
   const relations = new Map();
@@ -274,6 +276,10 @@ export function reduceEvents(events, errors = []) {
 
   for (const event of events) {
     const payload = event.payload || {};
+
+    if (event.type === "map.upsert") {
+      map = { ...(map || {}), ...payload, actor: event.actor, updatedAt: event.ts };
+    }
 
     if (event.type === "area.upsert") {
       const id = String(payload.id);
@@ -347,6 +353,14 @@ export function reduceEvents(events, errors = []) {
     parseErrors: errors.filter((error) => error.kind === "parse"),
     validationErrors: errors.filter((error) => error.kind !== "parse"),
     storeErrors: errors,
+    map: map || {
+      projectTitle: projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || "Project",
+      projectSummary: "",
+      layoutIntent: "domain",
+      layoutDirection: "AUTO",
+      keyFlows: [],
+      unresolvedQuestions: [],
+    },
     areas: areaList,
     entities: entityList,
     relations: relationList,

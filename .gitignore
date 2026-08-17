@@ -1,6 +1,6 @@
 .repo-canvas/
 .playwright-cli/
-output/playwright/
+/output/
 node_modules/
 *.log
 dist/

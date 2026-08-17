@@ -7,9 +7,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-const tarball = path.resolve(process.argv[2] || "");
-if (!fs.existsSync(tarball)) throw new Error("Usage: node tests/self-update-smoke.mjs <repo-canvas.tgz>");
 const packageInfo = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"));
+const tarball = path.resolve(process.argv[2] || path.join("dist", `repo-canvas-${packageInfo.version}.tgz`));
+if (!fs.statSync(tarball, { throwIfNoEntry: false })?.isFile()) throw new Error("Usage: node tests/self-update-smoke.mjs <repo-canvas.tgz>");
 const targetVersion = packageInfo.version;
 const sourceCli = path.resolve("repo-canvas", "scripts", "canvas.mjs");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-update-"));
@@ -164,9 +164,9 @@ try {
     windowsHide: true,
   });
   initialPid = server.pid;
-  const output = await waitForOutput(server, /listening at/);
-  token = output.match(/#token=([A-Za-z0-9_-]{43})/)?.[1];
-  assert.ok(token, output);
+  await waitForOutput(server, /listening at/);
+  token = fs.readFileSync(path.join(root, ".repo-canvas", "api-token"), "utf8").trim();
+  assert.match(token, /^[A-Za-z0-9_-]{43}$/);
 
   const available = await request(canvasPort, token, "/api/update/status?refresh=1");
   assert.equal(available.status, 200, available.text);

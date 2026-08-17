@@ -16,7 +16,7 @@ Install this project-visualization tool in the current repository, build the ini
 The agent will follow [`INSTALL_WITH_AGENT.txt`](INSTALL_WITH_AGENT.txt). The exact commands are:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.8.9
+npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.9.0
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```
@@ -32,13 +32,18 @@ The server opens the protected loopback URL in your default browser. Keep that f
 - live work attached to every semantic entity it affects;
 - entity passports and recent activity in the left rail;
 - collapsible project sections, full-map reset and an in-canvas legend;
-- draggable areas and nodes with saved layout;
-- owner-controlled names for areas, entities and relations by double-clicking their labels;
+- draggable area headers and entity cards with immediate, saved movement of their nested contents;
+- owner-controlled area and entity names and descriptions, plus relation labels, by double-clicking the object;
+- light and dark themes, readable active-area emphasis and relation labels revealed by a forgiving line hover;
 - distinct header controls for reloading current Canvas data and regenerating the semantic map with Architect;
 - a local Update button that appears only when a newer verified release is available;
 - direct navigation back to Codex App or an exact Codex, Claude Code or Kimi Code CLI resume command.
 
 The data model has no fixed entity cap. One Canvas can hold a small project or a map with hundreds of semantic entities.
+
+The map keeps one stable project geography at every zoom: areas, nested capabilities and concrete entities never disappear or jump to another composition. Zoom only changes where live activity is emphasized: an area while cards are too small to read, the affected entity at middle distance, and the exact agent work card when it becomes readable. Area colors also identify outgoing relations. React Flow keeps interaction smooth while ELK computes the composition off the main UI thread; the relation router reserves separate lanes and keeps labels outside cards.
+
+Dragging empty canvas space always moves the camera. An area moves from its framed header; an entity moves from its card. The small `⠿` mark identifies those draggable surfaces, while the surrounding area body remains available for panning.
 
 ## How it works
 
@@ -66,18 +71,18 @@ Observer reads public user messages, agent messages and tool-call metadata. Clau
 
 The npm installation adds Repo Canvas as an exact development dependency. `setup` adds three package scripts, the ignored `.repo-canvas/` runtime directory and two `.gitignore` entries. It does not add coding-agent instructions or hooks.
 
-The server binds to loopback only, opens a fresh tokenized Canvas URL on every start and shares that authorization with other tabs on the same local address. Existing tabs reconnect when a restarted server opens its new protected URL. Use `repo-canvas start --no-open` only when automatic browser opening is unwanted. The token protects all Canvas API reads and actions from unrelated local processes. Semantic events and Observer cursors stay in the repository's ignored `.repo-canvas/` directory. Model calls use existing local Codex authentication through the official Codex SDK. Claude and Kimi adapters only parse their local journals; they do not copy credentials or call those providers. No API key is copied into the project.
+The server binds to loopback only and opens a plain local Canvas URL. Loading that page establishes a host-only `HttpOnly`, `SameSite=Strict` browser session, so opening or refreshing the printed address is enough even after changing ports or clearing browser storage. The underlying random authorization token stays inside the project's ignored `.repo-canvas/` directory; legacy token links remain compatible. Host, origin and browser fetch guards protect Canvas API reads and actions from unrelated web pages. Use `repo-canvas start --no-open` only when automatic browser opening is unwanted. Semantic events and Observer cursors stay in the same ignored runtime directory. Model calls use existing local Codex authentication through the official Codex SDK. Claude and Kimi adapters only parse their local journals; they do not copy credentials or call those providers. No API key is copied into the project.
 
 From v0.8.6 onward, Canvas checks the public GitHub release feed in the background. If a newer release exists, an `Update` control appears at the bottom of the page. The updater requires the official `.tgz` asset and its GitHub SHA-256 digest, installs it side-by-side inside ignored `.repo-canvas/runtime/`, restarts the local server with the same browser authorization and keeps the previous runtime as a rollback. It does not rewrite the project's dependency or lockfile.
 
 ## Offline installation
 
-Download `repo-canvas-0.8.9-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.8.9.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
+Download `repo-canvas-0.9.0-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.9.0.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
 
 Manual commands:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.8.9.tgz
+npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.9.0.tgz
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```
@@ -106,3 +111,5 @@ REPO_CANVAS_OBSERVER_EFFORT
 ## License
 
 [MIT](LICENSE)
+
+Repo Canvas bundles `libavoid-js` for connector routing under LGPL-2.1-or-later. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for exact versions, source links, and license details.

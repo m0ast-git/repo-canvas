@@ -58,21 +58,49 @@ async function pool(commands, concurrency = 12) {
 
 const areaCount = 12;
 const entitiesPerArea = 20;
+const colors = ["#ef9a72", "#d3a24e", "#73bca4", "#70a9c1", "#9a8bd1", "#df82a5", "#b68b63", "#8eaf63", "#d78068", "#6cb4ae", "#b585b1", "#7899c5"];
+
+await run([
+  "map", "--title", "Стресс-карта промышленной платформы",
+  "--summary", "Проверка семантического зума, иерархии и маршрутов без искусственных лимитов",
+  "--layout", "hybrid", "--direction", "RIGHT",
+  "--flows", "приём заказа,исполнение,контроль качества,обратная связь",
+  "--actor", "stress-architect",
+]);
 await pool(Array.from({ length: areaCount }, (_, area) => [
   "area", "--id", `domain-${area + 1}`, "--title", `Промышленная область ${area + 1}`,
-  "--note", "Крупная смысловая территория стресс-карты", "--order", String(area + 1), "--actor", "stress",
+  "--note", "Крупная смысловая территория стресс-карты", "--color", colors[area],
+  "--evidence", `src/domain-${area + 1},README.md`, "--order", String(area + 1), "--actor", "stress",
 ]));
+
+const parentCommands = [];
+for (let area = 0; area < areaCount; area += 1) {
+  for (let index = 0; index < 4; index += 1) {
+    const id = `module-${area + 1}-${index + 1}`;
+    parentCommands.push([
+      "entity", "--id", id, "--area", `domain-${area + 1}`,
+      "--label", `Контур возможностей ${area + 1}.${index + 1}`,
+      "--status", "operational", "--kind", "capability",
+      "--path", `src/domain-${area + 1}/${id}`, "--purpose", "Объединяет связанные обязанности домена",
+      "--evidence", `src/domain-${area + 1}/${id},docs/domain-${area + 1}.md`,
+      "--actor", "stress",
+    ]);
+  }
+}
+await pool(parentCommands);
 
 const entityCommands = [];
 for (let area = 0; area < areaCount; area += 1) {
-  for (let index = 0; index < entitiesPerArea; index += 1) {
+  for (let index = 4; index < entitiesPerArea; index += 1) {
     const id = `module-${area + 1}-${index + 1}`;
     entityCommands.push([
       "entity", "--id", id, "--area", `domain-${area + 1}`,
+      "--parent", `module-${area + 1}-${(index % 4) + 1}`,
       "--label", `Производственный модуль ${area + 1}.${index + 1}`,
       "--status", index === 19 && area % 4 === 0 ? "planned" : "operational",
-      "--path", `src/domain-${area + 1}/${id}`, "--purpose", "Обрабатывает устойчивую часть промышленного контура",
-      "--actor", "stress",
+      "--kind", index % 5 === 0 ? "store" : index % 3 === 0 ? "process" : "module",
+      "--path", `src/domain-${area + 1}/${id}`, "--purpose", "Исполняет подтверждённый шаг промышленного сценария",
+      "--evidence", `src/domain-${area + 1}/${id}/index.ts`, "--actor", "stress",
     ]);
   }
 }
@@ -83,14 +111,19 @@ for (let area = 0; area < areaCount; area += 1) {
   for (let index = 1; index < entitiesPerArea; index += 1) {
     relationCommands.push([
       "relation", "--from", `module-${area + 1}-${index}`, "--to", `module-${area + 1}-${index + 1}`,
-      "--label", "передаёт поток", "--actor", "stress",
+      "--label", index % 3 === 0 ? "публикует событие готовности" : index % 2 === 0 ? "передаёт нормализованный поток" : "запрашивает подтверждение",
+      "--kind", index % 3 === 0 ? "event" : index % 2 === 0 ? "data" : "contract",
+      "--contract", "явный межмодульный контракт", "--mechanism", index % 2 === 0 ? "event bus" : "typed interface",
+      "--evidence", `src/domain-${area + 1}/contracts.ts`, "--actor", "stress",
     ]);
   }
   if (area < areaCount - 1) {
     for (let index = 1; index <= entitiesPerArea; index += 4) {
       relationCommands.push([
         "relation", "--from", `module-${area + 1}-${index}`, "--to", `module-${area + 2}-${index}`,
-        "--label", "междоменный контракт", "--actor", "stress",
+        "--label", "согласует междоменный результат", "--kind", "contract",
+        "--contract", "передача подтверждённого результата", "--mechanism", "public API",
+        "--evidence", "docs/integration-contracts.md", "--actor", "stress",
       ]);
     }
   }

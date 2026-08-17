@@ -5,6 +5,7 @@ export const SESSION_SURFACES = new Set([
   "codex-app", "claude-app", "kimi-app", "codex-cli", "claude-cli", "kimi-cli",
 ]);
 export const EVENT_TYPES = new Set([
+  "map.upsert",
   "area.upsert", "area.remove", "entity.upsert", "entity.remove",
   "relation.upsert", "relation.remove", "work.upsert",
   "activity.log",
@@ -101,11 +102,21 @@ export function validateEvent(event) {
   }
 
   const payload = event.payload;
-  if (event.type === "area.upsert") {
+  if (event.type === "map.upsert") {
+    requireString(errors, payload.projectTitle, "payload.projectTitle", { max: 240 });
+    optionalString(errors, payload.projectSummary, "payload.projectSummary", 4000);
+    if (payload.layoutIntent !== undefined) requireStatus(errors, payload.layoutIntent, "payload.layoutIntent", new Set(["flow", "hierarchy", "core", "domain", "clustered", "hybrid"]));
+    if (payload.layoutDirection !== undefined) requireStatus(errors, payload.layoutDirection, "payload.layoutDirection", new Set(["RIGHT", "DOWN", "AUTO"]));
+    if (payload.keyFlows !== undefined && !Array.isArray(payload.keyFlows)) errors.push("payload.keyFlows must be an array");
+    optionalStringList(errors, payload.unresolvedQuestions, "payload.unresolvedQuestions");
+  } else if (event.type === "area.upsert") {
     requireString(errors, payload.id, "payload.id", { max: 128, id: true });
     requireString(errors, payload.title, "payload.title", { max: 240 });
     optionalString(errors, payload.note, "payload.note", 2000);
     optionalString(errors, payload.ownerTitle, "payload.ownerTitle", 240);
+    optionalString(errors, payload.ownerNote, "payload.ownerNote", 2000);
+    optionalString(errors, payload.color, "payload.color", 32);
+    optionalStringList(errors, payload.evidence, "payload.evidence");
     for (const field of ["x", "y", "width", "height", "order"]) {
       if (payload[field] !== undefined) requireFiniteNumber(errors, payload[field], `payload.${field}`);
     }
@@ -121,6 +132,10 @@ export function validateEvent(event) {
     optionalString(errors, payload.purpose, "payload.purpose", 2000);
     optionalString(errors, payload.note, "payload.note", 2000);
     optionalString(errors, payload.ownerLabel, "payload.ownerLabel", 240);
+    optionalString(errors, payload.ownerPurpose, "payload.ownerPurpose", 2000);
+    optionalString(errors, payload.parentId, "payload.parentId", 128);
+    optionalString(errors, payload.kind, "payload.kind", 80);
+    optionalStringList(errors, payload.evidence, "payload.evidence");
     optionalStringList(errors, payload.inputs, "payload.inputs");
     optionalStringList(errors, payload.outputs, "payload.outputs");
     optionalStringList(errors, payload.dependsOn, "payload.dependsOn");
@@ -134,6 +149,10 @@ export function validateEvent(event) {
     requireString(errors, payload.to, "payload.to", { max: 128, id: true });
     optionalString(errors, payload.label, "payload.label", 240);
     optionalString(errors, payload.ownerLabel, "payload.ownerLabel", 240);
+    optionalString(errors, payload.kind, "payload.kind", 80);
+    optionalString(errors, payload.contract, "payload.contract", 500);
+    optionalString(errors, payload.mechanism, "payload.mechanism", 500);
+    optionalStringList(errors, payload.evidence, "payload.evidence");
     if (!new Set(["existing", "planned"]).has(payload.status)) errors.push(`payload.status has unsupported value '${String(payload.status)}'`);
   } else if (event.type === "relation.remove") {
     requireString(errors, payload.id, "payload.id", { max: 128, id: true });
@@ -176,6 +195,7 @@ export function validateEventSequence(eventsWithLines) {
       entities.add(event.payload.id);
       entityAreas.set(event.payload.id, event.payload.areaId);
       if (!areas.has(event.payload.areaId)) errors.push({ line, id: event.id, message: `entity area '${event.payload.areaId}' does not exist` });
+      if (event.payload.parentId && !entities.has(event.payload.parentId)) errors.push({ line, id: event.id, message: `entity parent '${event.payload.parentId}' does not exist` });
     }
     if (event.type === "entity.remove") {
       entities.delete(event.payload.id);

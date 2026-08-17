@@ -7,7 +7,10 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { routeEdges as routeLibavoidEdges } from "@mr_mint/elkjs-libavoid";
 
+import { patchSnapshotPositions } from "../client/src/canvas-snapshot.js";
+import { layoutFingerprint } from "../client/src/layout-fingerprint.js";
 import { resolveSessionTarget } from "../repo-canvas/scripts/session-locator.mjs";
 import { reduceEvents } from "../repo-canvas/scripts/canvas-store.mjs";
 import { validateEvent } from "../repo-canvas/scripts/canvas-schema.mjs";
@@ -16,6 +19,56 @@ import { anchoredZoomTransform, boxesOverlap, captionAwareDetour, captionShapesO
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(repositoryRoot, "repo-canvas", "scripts", "canvas.mjs");
 const writer = path.join(repositoryRoot, "tests", "concurrent-writer.mjs");
+
+test("saved coordinates do not restart the topology layout generation", () => {
+  const snapshot = {
+    map: { layoutDirection: "RIGHT" }, areas: [{ id: "core" }],
+    entities: [{ id: "api", areaId: "core", parentId: null, kind: "service", x: 10, y: 20 }],
+    relations: [{ id: "calls", from: "api", to: "api", status: "existing", label: "calls" }],
+    work: [],
+  };
+  const initial = layoutFingerprint(snapshot);
+  assert.equal(layoutFingerprint({ ...snapshot, revision: 2, entities: [{ ...snapshot.entities[0], x: 900, y: -400 }] }), initial);
+  assert.notEqual(layoutFingerprint({ ...snapshot, entities: [...snapshot.entities, { id: "db", areaId: "core", kind: "store" }] }), initial);
+  assert.notEqual(layoutFingerprint({ ...snapshot, relations: [{ ...snapshot.relations[0], label: "publishes" }] }), initial);
+});
+
+test("a successful drag patches the local snapshot without waiting for polling", () => {
+  const snapshot = { revision: 4, areas: [{ id: "core", x: 0, y: 0 }], entities: [{ id: "api", x: 10, y: 20 }] };
+  const patched = patchSnapshotPositions(snapshot, [{ kind: "entity", id: "api", x: 320, y: -80 }], 5);
+  assert.equal(patched.revision, 5);
+  assert.deepEqual(patched.entities[0], { id: "api", x: 320, y: -80 });
+  assert.equal(patched.areas[0], snapshot.areas[0]);
+  assert.equal(snapshot.entities[0].x, 10);
+});
+
+test("libavoid keeps a manually isolated node on a local route", async () => {
+  const isolated = { id: "isolated", x: 900, y: -1600, width: 244, height: 122 };
+  const graph = {
+    id: "routing-test",
+    children: [
+      isolated,
+      { id: "before", x: 120, y: 120, width: 244, height: 122 },
+      { id: "after", x: 1680, y: 260, width: 244, height: 122 },
+      ...Array.from({ length: 18 }, (_, index) => ({ id: `obstacle-${index}`, x: 380 + index % 6 * 210, y: 20 + Math.floor(index / 6) * 210, width: 150, height: 100 })),
+    ],
+    edges: [
+      { id: "incoming", source: "before", target: "isolated" },
+      { id: "outgoing", source: "isolated", target: "after" },
+    ],
+  };
+  const routes = await routeLibavoidEdges(graph, {
+    routingType: "orthogonal", segmentPenalty: 20, crossingPenalty: 70, fixedSharedPathPenalty: 50,
+    reverseDirectionPenalty: 24, shapeBufferDistance: 14, idealNudgingDistance: 12,
+    nudgeOrthogonalSegmentsConnectedToShapes: true, nudgeOrthogonalTouchingColinearSegments: true,
+    nudgeSharedPathsWithCommonEndPoint: true,
+  });
+  assert.equal(routes.size, 2);
+  for (const route of routes.values()) {
+    const points = [route.sourcePoint, ...route.bendPoints, route.targetPoint];
+    assert.ok(Math.min(...points.map((point) => point.y)) >= isolated.y - 40, "route must not escape above the isolated node");
+  }
+});
 
 test("semantic relation labels avoid headers, cards, and each other", () => {
   const a = { x: 100, y: 140 };
@@ -244,7 +297,7 @@ function request(port, { method = "GET", path: requestPath = "/api/health", head
           const text = Buffer.concat(chunks).toString("utf8");
           let json = null;
           try { json = text ? JSON.parse(text) : null; } catch { /* static/text response */ }
-          resolve({ status: response.statusCode, text, json });
+          resolve({ status: response.statusCode, headers: response.headers, text, json });
         });
       },
     );
@@ -368,14 +421,25 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   });
   t.after(() => { if (server.exitCode === null) server.kill("SIGTERM"); });
   const startedOutput = await waitForOutput(server, /listening at/);
-  const apiToken = startedOutput.match(/#token=([A-Za-z0-9_-]{43})/)?.[1];
-  assert.ok(apiToken, `Server did not print a per-launch API token: ${startedOutput}`);
+  assert.match(startedOutput, new RegExp(`http://127\\.0\\.0\\.1:${port}/`));
+  const apiToken = fs.readFileSync(path.join(root, ".repo-canvas", "api-token"), "utf8").trim();
+  assert.match(apiToken, /^[A-Za-z0-9_-]{43}$/);
 
   const badHost = await request(port, { headers: { Host: `attacker.example:${port}` } });
   assert.equal(badHost.status, 403);
 
   const unauthorized = await request(port, { path: "/api/state", headers: { Host: `127.0.0.1:${port}` } });
   assert.equal(unauthorized.status, 401);
+
+  const bootstrap = await request(port, { path: "/", headers: { Host: `127.0.0.1:${port}` } });
+  assert.equal(bootstrap.status, 200);
+  const sessionCookie = bootstrap.headers["set-cookie"]?.[0];
+  assert.match(sessionCookie || "", /^repo_canvas_api=[A-Za-z0-9_-]{43}; Path=\/api; HttpOnly; SameSite=Strict$/);
+  const cookieState = await request(port, {
+    path: "/api/state",
+    headers: { Host: `127.0.0.1:${port}`, Cookie: sessionCookie.split(";", 1)[0] },
+  });
+  assert.equal(cookieState.status, 200, "opening the plain loopback URL must authorize the browser session");
 
   const wrongToken = await request(port, {
     path: "/api/state",
@@ -477,10 +541,25 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   assert.equal(renamedState.json.areas[0].ownerTitle, "Runtime");
   assert.equal(renamedState.json.entities[0].ownerLabel, "Worker");
   assert.equal(renamedState.json.relations[0].ownerLabel, "feeds itself");
+  for (const [kind, id, values] of [
+    ["area", "core", { title: "Runtime", description: "Owner area description" }],
+    ["entity", "module", { title: "Worker", description: "Owner entity description" }],
+  ]) {
+    const editPayload = JSON.stringify({ canvasRevision: renameRevision, kind, id, values });
+    const edited = await request(port, {
+      method: "POST", path: "/api/rename",
+      headers: { ...commonHeaders, "Content-Length": Buffer.byteLength(editPayload), Origin: `http://127.0.0.1:${port}` }, body: editPayload,
+    });
+    assert.equal(edited.status, 201, edited.text); renameRevision = edited.json.revision;
+  }
+  const editedState = await request(port, { path: "/api/state", headers: authHeaders });
+  assert.equal(editedState.json.areas[0].ownerNote, "Owner area description");
+  assert.equal(editedState.json.entities[0].ownerPurpose, "Owner entity description");
   assert.equal(runCli(root, ["entity", "--id", "module", "--area", "core", "--label", "Upstream module", "--status", "operational"]).status, 0);
   const refreshedState = await request(port, { path: "/api/state", headers: authHeaders });
   assert.equal(refreshedState.json.entities[0].label, "Upstream module");
   assert.equal(refreshedState.json.entities[0].ownerLabel, "Worker", "owner name must survive later agent updates");
+  assert.equal(refreshedState.json.entities[0].ownerPurpose, "Owner entity description", "owner description must survive later agent updates");
   const emptyRenamePayload = JSON.stringify({ canvasRevision: renameRevision, kind: "entity", id: "module", value: "   " });
   const emptyRename = await request(port, {
     method: "POST",
@@ -510,4 +589,17 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   server.kill("SIGTERM");
   await waitForExit(server, 2_500);
   assert.ok(Date.now() - started < 2_500);
+
+  const restarted = spawn(process.execPath, [cli, "start", "--no-open", "--root", root, "--port", String(port)], {
+    cwd: root,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => { if (restarted.exitCode === null) restarted.kill("SIGTERM"); });
+  await waitForOutput(restarted, /listening at/);
+  const restartedToken = fs.readFileSync(path.join(root, ".repo-canvas", "api-token"), "utf8").trim();
+  assert.equal(restartedToken, apiToken, "the project token must survive an ordinary server restart");
+  const reconnected = await request(port, { path: "/api/state", headers: authHeaders });
+  assert.equal(reconnected.status, 200, "an existing browser token must reconnect after restart");
+  restarted.kill("SIGTERM");
+  await waitForExit(restarted, 2_500);
 });
