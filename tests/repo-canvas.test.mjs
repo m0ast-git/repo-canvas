@@ -11,6 +11,7 @@ import { routeEdges as routeLibavoidEdges } from "@mr_mint/elkjs-libavoid";
 
 import { patchSnapshotPositions } from "../client/src/canvas-snapshot.js";
 import { layoutFingerprint } from "../client/src/layout-fingerprint.js";
+import { codexCommandArguments, codexProcessOptions, codexTarget, createIsolatedCodexHome } from "../repo-canvas/scripts/model-runtime.mjs";
 import { resolveSessionTarget } from "../repo-canvas/scripts/session-locator.mjs";
 import { reduceEvents } from "../repo-canvas/scripts/canvas-store.mjs";
 import { validateEvent } from "../repo-canvas/scripts/canvas-schema.mjs";
@@ -19,6 +20,36 @@ import { anchoredZoomTransform, boxesOverlap, captionAwareDetour, captionShapesO
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(repositoryRoot, "repo-canvas", "scripts", "canvas.mjs");
 const writer = path.join(repositoryRoot, "tests", "concurrent-writer.mjs");
+
+test("Codex runtime resolves Windows, macOS, and Linux without a shell wrapper", () => {
+  assert.deepEqual(codexTarget("win32", "x64"), { targetTriple: "x86_64-pc-windows-msvc", packageName: "@openai/codex-win32-x64", binaryName: "codex.exe" });
+  assert.deepEqual(codexTarget("darwin", "arm64"), { targetTriple: "aarch64-apple-darwin", packageName: "@openai/codex-darwin-arm64", binaryName: "codex" });
+  assert.deepEqual(codexTarget("darwin", "x64"), { targetTriple: "x86_64-apple-darwin", packageName: "@openai/codex-darwin-x64", binaryName: "codex" });
+  assert.deepEqual(codexTarget("linux", "arm64"), { targetTriple: "aarch64-unknown-linux-musl", packageName: "@openai/codex-linux-arm64", binaryName: "codex" });
+  assert.throws(() => codexTarget("darwin", "ia32"), /Unsupported platform/);
+  const args = codexCommandArguments({ cwd: "/fixture", profile: { model: "test-model", effort: "medium" }, schemaPath: "/schema.json" });
+  assert.ok(args.includes("mcp_servers={}"));
+  assert.ok(args.includes("project_doc_max_bytes=0"));
+  for (const feature of ["apps", "browser_use", "computer_use", "hooks", "memories", "multi_agent", "plugins", "skill_search"]) assert.ok(args.includes(feature));
+  assert.deepEqual(codexProcessOptions({ SAFE: "1" }), { env: { SAFE: "1" }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+});
+
+test("Codex runtime isolates subscription auth from global instructions", async (t) => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-codex-source-"));
+  fs.writeFileSync(path.join(source, "auth.json"), "fixture-auth");
+  fs.writeFileSync(path.join(source, "AGENTS.md"), "must not leak");
+  fs.writeFileSync(path.join(source, "config.toml"), "[mcp_servers.fixture]");
+  fs.mkdirSync(path.join(source, "skills"));
+  t.after(() => fs.rmSync(source, { recursive: true, force: true }));
+  const isolated = await createIsolatedCodexHome(source);
+  try {
+    assert.equal(fs.readFileSync(path.join(isolated.directory, "auth.json"), "utf8"), "fixture-auth");
+    assert.equal(fs.existsSync(path.join(isolated.directory, "AGENTS.md")), false);
+    assert.equal(fs.existsSync(path.join(isolated.directory, "config.toml")), false);
+    assert.equal(fs.existsSync(path.join(isolated.directory, "skills")), false);
+  } finally { await isolated.cleanup(); }
+  assert.equal(fs.existsSync(isolated.directory), false);
+});
 
 test("saved coordinates do not restart the topology layout generation", () => {
   const snapshot = {
@@ -458,6 +489,9 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   assert.equal(architectStatus.status, 200);
   assert.equal(architectStatus.json.status, "idle");
   assert.equal(architectStatus.json.running, false);
+  assert.equal(architectStatus.json.phase, "idle");
+  assert.equal(architectStatus.json.elapsedMs, 0);
+  assert.ok(Date.parse(architectStatus.json.checkedAt));
   const guardedArchitectRefresh = await request(port, {
     method: "POST",
     path: "/api/architect/refresh",

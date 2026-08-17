@@ -16,7 +16,7 @@ Install this project-visualization tool in the current repository, build the ini
 The agent will follow [`INSTALL_WITH_AGENT.txt`](INSTALL_WITH_AGENT.txt). The exact commands are:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.9.0
+npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.9.1
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```
@@ -36,6 +36,7 @@ The server opens the protected loopback URL in your default browser. Keep that f
 - owner-controlled area and entity names and descriptions, plus relation labels, by double-clicking the object;
 - light and dark themes, readable active-area emphasis and relation labels revealed by a forgiving line hover;
 - distinct header controls for reloading current Canvas data and regenerating the semantic map with Architect;
+- a persistent Architect status surface with current phase, heartbeat, elapsed time, validation repair and the final result;
 - a local Update button that appears only when a newer verified release is available;
 - direct navigation back to Codex App or an exact Codex, Claude Code or Kimi Code CLI resume command.
 
@@ -47,7 +48,9 @@ Dragging empty canvas space always moves the camera. An area moves from its fram
 
 ## How it works
 
-`setup` checks the local Codex connection, then runs a read-only Architect with `gpt-5.6-sol` at medium reasoning. Architect inspects the repository once and builds its semantic map.
+`setup` checks the local Codex connection, then runs a read-only Architect with `gpt-5.6-sol` at medium reasoning. Architect inspects the repository once and builds its semantic map in the owner's working language. Human-visible labels follow the owner's viewpoint and product documentation instead of copying unexplained code jargon.
+
+Before anything is written, Repo Canvas validates area membership, hierarchy, relation endpoints, removal references and every end-to-end flow step. If the model returns an inconsistent cross-reference, the expensive inspection result is retained and sent through a bounded structural repair using an explicit enum of allowed ids. The corrected result is validated again and only a fully valid map is applied.
 
 When the Canvas server is running, Observer watches public local session journals for this repository. It creates a provisional card on the first observed turn event, then uses `gpt-5.4-mini` to classify small event deltas and attach the work to the map. On completion, Observer updates affected passports and relations when the session contains enough evidence.
 
@@ -71,18 +74,20 @@ Observer reads public user messages, agent messages and tool-call metadata. Clau
 
 The npm installation adds Repo Canvas as an exact development dependency. `setup` adds three package scripts, the ignored `.repo-canvas/` runtime directory and two `.gitignore` entries. It does not add coding-agent instructions or hooks.
 
-The server binds to loopback only and opens a plain local Canvas URL. Loading that page establishes a host-only `HttpOnly`, `SameSite=Strict` browser session, so opening or refreshing the printed address is enough even after changing ports or clearing browser storage. The underlying random authorization token stays inside the project's ignored `.repo-canvas/` directory; legacy token links remain compatible. Host, origin and browser fetch guards protect Canvas API reads and actions from unrelated web pages. Use `repo-canvas start --no-open` only when automatic browser opening is unwanted. Semantic events and Observer cursors stay in the same ignored runtime directory. Model calls use existing local Codex authentication through the official Codex SDK. Claude and Kimi adapters only parse their local journals; they do not copy credentials or call those providers. No API key is copied into the project.
+The server binds to loopback only and opens a plain local Canvas URL. Loading that page establishes a host-only `HttpOnly`, `SameSite=Strict` browser session, so opening or refreshing the printed address is enough even after changing ports or clearing browser storage. The underlying random authorization token stays inside the project's ignored `.repo-canvas/` directory. Host, origin and browser fetch guards protect Canvas API reads and actions from unrelated web pages. Use `repo-canvas start --no-open` only when automatic browser opening is unwanted. Semantic events and Observer cursors stay in the same ignored runtime directory.
+
+Internal Architect and Observer calls use the official local Codex runtime with the user's existing subscription authentication. Each call gets a temporary clean Codex home containing only a filesystem link to that authentication: project/global AGENTS files, skills, memories, plugins, hooks and MCP servers are excluded, the process has read-only repository access, and the temporary home is removed afterward. No API key or credential copy is added to the project. Windows launches use a hidden process; macOS and Linux use their native packaged Codex binary. Claude and Kimi adapters only parse their local journals; they do not copy credentials or call those providers.
 
 From v0.8.6 onward, Canvas checks the public GitHub release feed in the background. If a newer release exists, an `Update` control appears at the bottom of the page. The updater requires the official `.tgz` asset and its GitHub SHA-256 digest, installs it side-by-side inside ignored `.repo-canvas/runtime/`, restarts the local server with the same browser authorization and keeps the previous runtime as a rollback. It does not rewrite the project's dependency or lockfile.
 
 ## Offline installation
 
-Download `repo-canvas-0.9.0-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.9.0.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
+Download `repo-canvas-0.9.1-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.9.1.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
 
 Manual commands:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.9.0.tgz
+npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.9.1.tgz
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```

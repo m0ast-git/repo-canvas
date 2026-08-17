@@ -20,10 +20,10 @@ function workId(sessionId, turnId) {
 
 function compactMap(snapshot) {
   return {
-    map: { projectTitle: snapshot.map?.projectTitle, keyFlows: snapshot.map?.keyFlows || [] },
-    areas: snapshot.areas.map(({ id, title, note }) => ({ id, title, note })),
-    entities: snapshot.entities.map(({ id, areaId, parentId, label, kind, status, purpose, evidence }) => ({ id, areaId, parentId, label, kind, status, purpose, evidence })),
-    relations: snapshot.relations.map(({ id, from, to, label, kind, contract, mechanism, status }) => ({ id, from, to, label, kind, contract, mechanism, status })),
+    map: { projectTitle: snapshot.map?.projectTitle, projectSummary: snapshot.map?.projectSummary, keyFlows: snapshot.map?.keyFlows || [] },
+    areas: snapshot.areas.map(({ id, title, note, ownerTitle, ownerNote }) => ({ id, title, note, ownerTitle, ownerNote })),
+    entities: snapshot.entities.map(({ id, areaId, parentId, label, kind, status, purpose, evidence, ownerLabel, ownerPurpose }) => ({ id, areaId, parentId, label, kind, status, purpose, evidence, ownerLabel, ownerPurpose })),
+    relations: snapshot.relations.map(({ id, from, to, label, kind, contract, mechanism, status, ownerLabel }) => ({ id, from, to, label, kind, contract, mechanism, status, ownerLabel })),
   };
 }
 
@@ -33,6 +33,8 @@ export function observerPrompt({ turn, final, snapshot }) {
 You never inspect the repository, never write code, never answer the owner and never invent explanations. Use only supplied public session events and the current evidence-backed semantic map. Hidden reasoning is unavailable and irrelevant.
 
 Rules:
+- use the language of the owner's current request for every human-visible work title, summary and new map label; if the request has no usable language signal, follow the current map;
+- prefer plain owner-facing domain language and preserve established project vocabulary; keep code identifiers and protocols in technical fields rather than unexplained visible jargon;
 - describe the concrete work in a short title and summary;
 - attach work to every existing semantic entity it genuinely affects;
 - target the most specific confirmed entity; the UI rolls activity up to visible parents and areas;
@@ -55,14 +57,15 @@ New public events: ${JSON.stringify(turn.events)}`;
 }
 
 function provisionalWork(turn, meta, adapter) {
+  const russian = /[А-Яа-яЁё]/.test(turn.userMessage || "");
   appendEvent(createEvent("work.upsert", {
     actor: "observer",
     payload: {
       id: turn.workId,
-      title: "Новая работа",
+      title: russian ? "Новая работа" : "New work",
       status: "active",
       targets: [],
-      note: "Агент осмысливает задачу",
+      note: russian ? "Агент осмысливает задачу" : "The agent is interpreting the request",
       provisional: true,
       session: adapter.locator(meta),
     },

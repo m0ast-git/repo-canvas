@@ -149,7 +149,7 @@ function gitCommonDirectory(cwd) {
 }
 
 export function sessionBelongsToRepository(meta, repoRoot, cache = new Map()) {
-  if (!meta?.cwd || meta.originator === "codex_sdk_ts" || meta.env?.REPO_CANVAS_INTERNAL_SESSION === "1") return false;
+  if (!meta?.cwd || ["codex_sdk_ts", "repo_canvas"].includes(meta.originator) || meta.env?.REPO_CANVAS_INTERNAL_SESSION === "1") return false;
   if (pathBelongsToRoot(meta.cwd, repoRoot)) return true;
   const rootKey = `root:${repoRoot}`;
   const cwdKey = `cwd:${meta.cwd}`;

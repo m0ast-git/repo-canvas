@@ -1,6 +1,6 @@
 {
   "name": "repo-canvas",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "A local semantic repository map with live Codex, Claude Code and Kimi Code work",
   "type": "module",
   "license": "MIT",
@@ -50,7 +50,7 @@
   ],
   "dependencies": {
     "@mr_mint/elkjs-libavoid": "0.5.0",
-    "@openai/codex-sdk": "0.147.0",
+    "@openai/codex": "0.147.0",
     "@xyflow/react": "^12.11.3",
     "elkjs": "^0.12.0",
     "react": "^19.2.8",

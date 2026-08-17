@@ -24,27 +24,49 @@ if (configuredApiToken && !/^[A-Za-z0-9_-]{43}$/.test(configuredApiToken)) {
 const apiToken = configuredApiToken || readOrCreateApiToken();
 let observerService = null;
 let architectJob = null;
-let architectState = { status: "idle", startedAt: null, finishedAt: null, result: null, error: null };
+let architectState = {
+  status: "idle", phase: "idle", startedAt: null, heartbeatAt: null, finishedAt: null,
+  attempt: 0, activityCount: 0, detail: null, result: null, error: null,
+};
 const updateService = createUpdateService({ host, port, apiToken, shutdown });
 
 function publicArchitectState() {
-  return { ...architectState, running: architectJob !== null };
+  return {
+    ...architectState,
+    running: architectJob !== null,
+    checkedAt: new Date().toISOString(),
+    elapsedMs: architectState.startedAt ? Math.max(0, Date.now() - Date.parse(architectState.startedAt)) : 0,
+  };
+}
+
+function architectProgress(progress = {}) {
+  architectState = {
+    ...architectState,
+    phase: progress.phase || architectState.phase || "reasoning",
+    heartbeatAt: progress.at || new Date().toISOString(),
+    attempt: Number.isInteger(progress.attempt) ? progress.attempt : architectState.attempt,
+    activityCount: architectState.activityCount + 1,
+    detail: progress.detail || null,
+  };
 }
 
 function startArchitectRefresh(viewpoint = "") {
   if (architectJob) return false;
-  architectState = { status: "running", startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null };
-  architectJob = runArchitect({ refresh: true, viewpoint })
+  const startedAt = new Date().toISOString();
+  architectState = {
+    status: "running", phase: "starting", startedAt, heartbeatAt: startedAt, finishedAt: null,
+    attempt: 0, activityCount: 0, detail: null, result: null, error: null,
+  };
+  architectJob = runArchitect({ refresh: true, viewpoint, onProgress: architectProgress })
     .then((result) => {
-      architectState = { ...architectState, status: "done", finishedAt: new Date().toISOString(), result, error: null };
+      const finishedAt = new Date().toISOString();
+      architectState = { ...architectState, status: "done", phase: "done", heartbeatAt: finishedAt, finishedAt, result, error: null, detail: null };
     })
     .catch((error) => {
+      const finishedAt = new Date().toISOString();
       architectState = {
-        ...architectState,
-        status: "failed",
-        finishedAt: new Date().toISOString(),
-        result: null,
-        error: String(error?.message || error).slice(0, 500),
+        ...architectState, status: "failed", phase: "failed", heartbeatAt: finishedAt, finishedAt,
+        result: null, error: String(error?.message || error).slice(0, 500), detail: null,
       };
     })
     .finally(() => { architectJob = null; });

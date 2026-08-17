@@ -15,7 +15,8 @@ const store = await import("../repo-canvas/scripts/canvas-store.mjs");
 const schema = await import("../repo-canvas/scripts/canvas-schema.mjs");
 const sessions = await import("../repo-canvas/scripts/codex-sessions.mjs");
 const semantic = await import("../repo-canvas/scripts/semantic-model.mjs");
-const { CodexObserver } = await import("../repo-canvas/scripts/observer.mjs");
+const architect = await import("../repo-canvas/scripts/architect.mjs");
+const { CodexObserver, observerPrompt } = await import("../repo-canvas/scripts/observer.mjs");
 
 function emit(type, payload) {
   store.appendEvent(store.createEvent(type, { actor: "test", payload }));
@@ -38,6 +39,7 @@ test("large Codex metadata lines and repository filtering remain reliable", () =
   assert.equal(meta.id, "large-session");
   assert.equal(sessions.sessionBelongsToRepository(meta, root), true);
   assert.equal(sessions.sessionBelongsToRepository({ ...meta, originator: "codex_sdk_ts" }, root), false);
+  assert.equal(sessions.sessionBelongsToRepository({ ...meta, originator: "repo_canvas" }, root), false);
 });
 
 test("journal reads stay bounded, resume in order, and discard oversized records once", () => {
@@ -109,6 +111,22 @@ test("observer reuses persisted session metadata instead of rereading full journ
   await observer.tick();
   await observer.tick();
   assert.equal(metadataReads, 1);
+});
+
+test("observer follows owner language and preserves owner-facing map vocabulary", () => {
+  const prompt = observerPrompt({
+    final: false,
+    turn: { sessionId: "language", userMessage: "Исправь выгрузку отчёта", events: [], title: "", summary: "", targets: [] },
+    snapshot: {
+      map: { projectTitle: "Платформа", projectSummary: "Владелец видит отчёты", keyFlows: [] },
+      areas: [{ id: "reports", title: "Reports", ownerTitle: "Отчёты", note: "", ownerNote: "Пользовательские выгрузки" }],
+      entities: [{ id: "export", areaId: "reports", parentId: "", label: "Exporter", ownerLabel: "Выгрузка", kind: "process", status: "operational", purpose: "", ownerPurpose: "Формирует файл", evidence: [] }],
+      relations: [],
+    },
+  });
+  assert.match(prompt, /language of the owner's current request/);
+  assert.match(prompt, /Исправь выгрузку отчёта/);
+  assert.match(prompt, /"ownerLabel":"Выгрузка"/);
 });
 
 test("observer publishes immediately, classifies deltas, and removes concepts only at completion", async () => {
@@ -214,6 +232,70 @@ test("architect rejects hierarchy cycles and cross-domain parents", () => {
   const entity = (id, areaId, parentId) => ({ id, areaId, parentId, label: id, kind: "module", status: "operational", path: "", purpose: "fixture", note: "", evidence: [], order: 1 });
   assert.throws(() => semantic.validateArchitecture({ ...base, entities: [entity("cycle-a", "a", "cycle-b"), entity("cycle-b", "a", "cycle-a")] }), /cycle/);
   assert.throws(() => semantic.validateArchitecture({ ...base, entities: [entity("parent-a", "a", ""), entity("child-b", "b", "parent-a")] }), /another area/);
+});
+
+test("architect repairs invalid cross-references without repeating repository inspection", async () => {
+  const base = {
+    projectTitle: "Repair fixture", projectSummary: "Checks a semantic flow", layoutIntent: "flow", layoutDirection: "RIGHT",
+    keyFlows: [{ id: "primary-flow", title: "Primary flow", trigger: "request arrives", outcome: "result leaves", steps: ["repair-entry", "invented-action", "repair-output"] }],
+    unresolvedQuestions: [],
+    areas: [{ id: "repair-area", title: "Repair area", note: "Owns the fixture", color: "#ef9a72", evidence: ["src"], order: 1 }],
+    entities: [
+      { id: "repair-entry", areaId: "repair-area", parentId: "", label: "Entry", kind: "interface", status: "operational", path: "src/entry", purpose: "Accept input", note: "", evidence: ["src/entry"], order: 1 },
+      { id: "repair-output", areaId: "repair-area", parentId: "", label: "Output", kind: "process", status: "operational", path: "src/output", purpose: "Return output", note: "", evidence: ["src/output"], order: 2 },
+    ],
+    relations: [{ id: "repair-contract", from: "repair-entry", to: "repair-output", label: "passes accepted input", kind: "contract", contract: "Input", mechanism: "function call", evidence: ["src"], status: "existing" }],
+    removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
+  };
+  const repaired = structuredClone(base);
+  repaired.keyFlows[0].steps = ["repair-entry", "repair-output"];
+  let calls = 0;
+  let repairOptions = null;
+  const phases = [];
+  const runner = async (options) => {
+    calls += 1;
+    if (calls === 2) repairOptions = options;
+    return { value: calls === 1 ? base : repaired, profile: { model: "fake-sol", effort: "medium" }, threadId: `repair-thread-${calls}` };
+  };
+  const result = await architect.runArchitect({ root, refresh: false, runner, onProgress: (progress) => phases.push(progress.phase) });
+  assert.equal(calls, 2);
+  assert.equal(result.repairs, 1);
+  assert.deepEqual(result.threadIds, ["repair-thread-1", "repair-thread-2"]);
+  assert.match(repairOptions.prompt, /Do not inspect files, run tools/);
+  assert.deepEqual(repairOptions.outputSchema.properties.keyFlows.items.properties.steps.items.enum.includes("invented-action"), false);
+  assert.deepEqual(repairOptions.outputSchema.properties.areas.items.properties.id.enum, ["repair-area"]);
+  assert.deepEqual(repairOptions.outputSchema.properties.entities.items.properties.id.enum.sort(), ["repair-entry", "repair-output"]);
+  assert.ok(phases.includes("repairing"));
+  assert.ok(phases.includes("applying"));
+  assert.deepEqual(store.getSnapshot().map.keyFlows.at(-1).steps, ["repair-entry", "repair-output"]);
+});
+
+test("architect prompt makes owner language and reference preflight explicit", () => {
+  const prompt = architect.architectPrompt({ snapshot: store.getSnapshot(), refresh: true, viewpoint: "Покажи проект языком владельца" });
+  assert.match(prompt, /owner viewpoint is the strongest language signal/);
+  assert.match(prompt, /keyFlow step is an exact id/);
+  assert.match(prompt, /Mandatory preflight/);
+  assert.match(prompt, /Покажи проект языком владельца/);
+});
+
+test("architect language gate rejects mixed owner-facing jargon but keeps technical names", () => {
+  const candidate = {
+    projectTitle: "Анализатор спецификаций", projectSummary: "Проверяет входные данные", layoutIntent: "flow", layoutDirection: "RIGHT",
+    keyFlows: [{ id: "review", title: "Проверка", trigger: "Пользователь загружает файл", outcome: "Получен отчёт", steps: ["api", "reviewer"] }], unresolvedQuestions: [],
+    areas: [{ id: "product", title: "Продукт", note: "Пользовательский контур", color: "#ef9a72", evidence: [], order: 1 }],
+    entities: [
+      { id: "api", areaId: "product", parentId: "", label: "FastAPI runtime", kind: "service", status: "operational", path: "", purpose: "Принимает запросы", note: "", evidence: [], order: 1 },
+      { id: "reviewer", areaId: "product", parentId: "", label: "Проверка", kind: "process", status: "operational", path: "", purpose: "Формирует PostgreSQL", note: "", evidence: [], order: 2 },
+    ],
+    relations: [{ id: "review", from: "api", to: "reviewer", label: "передаёт proposed output на проверку", kind: "data", contract: "", mechanism: "", evidence: [], status: "existing" }],
+    removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
+  };
+  const issues = architect.architectureLanguageIssues(candidate, "ru");
+  assert.ok(issues.some((item) => item.includes("entity.api.label") && item.includes("runtime")));
+  assert.ok(issues.some((item) => item.includes("relation.review.label") && item.includes("proposed")));
+  assert.ok(!issues.some((item) => item.includes("entity.reviewer.purpose")), "single technical product names stay valid inside Russian wording");
+  assert.equal(architect.preferredMapLanguage("Покажи карту владельцу", store.getSnapshot()), "ru");
+  assert.equal(architect.preferredMapLanguage("", { map: {}, areas: [], entities: [], relations: [] }, "Русская документация проекта содержит достаточно текста для определения языка.".repeat(4)), "ru");
 });
 
 test("completed observer work may remain provisional when no semantic target was established", () => {
