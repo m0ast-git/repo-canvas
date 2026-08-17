@@ -7,9 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
-const tarballArgument = process.argv[2];
-if (!tarballArgument) throw new Error("Usage: node tests/package-smoke.mjs <repo-canvas.tgz>");
-const tarball = path.resolve(tarballArgument);
+const packageInfo = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"));
+const tarball = path.resolve(process.argv[2] || path.join("dist", `repo-canvas-${packageInfo.version}.tgz`));
 if (!fs.existsSync(tarball)) throw new Error(`Tarball not found: ${tarball}`);
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-package-"));
