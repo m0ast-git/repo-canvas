@@ -8,6 +8,8 @@ let libavoidReady;
 function ensureLibavoid() { if (!libavoidReady) libavoidReady = initLibavoid(libavoidWasmUrl).catch((error) => { libavoidReady = null; throw error; }); return libavoidReady; }
 const ENTITY_W = 244;
 const ENTITY_H = 122;
+const PERSON_W = 176;
+const PERSON_H = 164;
 const WORK_W = 196;
 const WORK_H = 66;
 const AREA_HEADER_H = 100;
@@ -147,6 +149,50 @@ async function layoutAreas(snapshot, areaLayouts, direction) {
   return new Map((result.children || []).map((item) => [item.id, { x: Number(item.x || 0), y: Number(item.y || 0), width: item.width, height: item.height }]));
 }
 
+function mapBounds(rects) {
+  const values = [...rects.values()];
+  return {
+    left: Math.min(0, ...values.map((rect) => rect.x)), top: Math.min(0, ...values.map((rect) => rect.y)),
+    right: Math.max(1200, ...values.map((rect) => rect.x + rect.width)), bottom: Math.max(800, ...values.map((rect) => rect.y + rect.height)),
+  };
+}
+
+function placePeople(snapshot, areaRects, entityRects) {
+  const people = snapshot.entities.filter((entity) => entity.kind === "person");
+  if (!people.length) return new Map();
+  const bounds = mapBounds(areaRects); const byId = new Map(snapshot.entities.map((entity) => [entity.id, entity]));
+  const targetRects = (personId) => (snapshot.relations || []).filter((relation) => relation.from === personId || relation.to === personId).map((relation) => {
+    const otherId = relation.from === personId ? relation.to : relation.from; const direct = entityRects.get(otherId);
+    if (direct) return direct; const area = areaRects.get(byId.get(otherId)?.areaId); return area || null;
+  }).filter(Boolean);
+  const lanes = new Map(["left", "right", "top", "bottom"].map((side) => [side, []]));
+  for (const person of people) {
+    const targets = targetRects(person.id); const centers = targets.map(center);
+    const anchor = centers.length ? { x: centers.reduce((sum, point) => sum + point.x, 0) / centers.length, y: centers.reduce((sum, point) => sum + point.y, 0) / centers.length } : { x: bounds.left, y: bounds.top };
+    const distances = [
+      ["left", Math.abs(anchor.x - bounds.left)], ["right", Math.abs(bounds.right - anchor.x)],
+      ["top", Math.abs(anchor.y - bounds.top)], ["bottom", Math.abs(bounds.bottom - anchor.y)],
+    ].sort((a, b) => a[1] - b[1]);
+    lanes.get(distances[0][0]).push({ person, anchor });
+  }
+  const result = new Map(); const gap = 34; const margin = 96;
+  const placeLane = (side, entries) => {
+    const horizontal = side === "top" || side === "bottom"; entries.sort((a, b) => horizontal ? a.anchor.x - b.anchor.x : a.anchor.y - b.anchor.y);
+    let cursor = horizontal ? bounds.left : bounds.top;
+    for (const { person, anchor } of entries) {
+      const preferred = horizontal ? anchor.x - PERSON_W / 2 : anchor.y - PERSON_H / 2;
+      const along = Math.max(cursor, preferred); cursor = along + (horizontal ? PERSON_W : PERSON_H) + gap;
+      const rect = horizontal
+        ? { x: along, y: side === "top" ? bounds.top - PERSON_H - margin : bounds.bottom + margin, width: PERSON_W, height: PERSON_H, depth: 0, group: false, person: true }
+        : { x: side === "left" ? bounds.left - PERSON_W - margin : bounds.right + margin, y: along, width: PERSON_W, height: PERSON_H, depth: 0, group: false, person: true };
+      if (Number.isFinite(Number(person.x)) && Number.isFinite(Number(person.y))) { rect.x = Number(person.x); rect.y = Number(person.y); }
+      result.set(person.id, rect);
+    }
+  };
+  for (const [side, entries] of lanes) placeLane(side, entries);
+  return result;
+}
+
 function ancestors(entities) {
   const byId = new Map(entities.map((entity) => [entity.id, entity]));
   const top = new Map();
@@ -268,12 +314,16 @@ function aggregateRelations(snapshot) {
 }
 
 function aggregateAreaRelations(snapshot) {
-  const areaByEntity = new Map(snapshot.entities.map((entity) => [entity.id, entity.areaId])); const grouped = new Map();
+  const areaByEntity = new Map(snapshot.entities.map((entity) => [entity.id, entity.areaId])); const kindByEntity = new Map(snapshot.entities.map((entity) => [entity.id, entity.kind])); const grouped = new Map();
   for (const relation of snapshot.relations || []) {
     const sourceAreaId = areaByEntity.get(relation.from); const targetAreaId = areaByEntity.get(relation.to);
-    if (!sourceAreaId || !targetAreaId || sourceAreaId === targetAreaId) continue;
-    const key = `${sourceAreaId}->${targetAreaId}:${relation.status || "existing"}`;
-    const current = grouped.get(key) || { id: `area-relation:${key}`, source: `area:${sourceAreaId}`, target: `area:${targetAreaId}`, sourceAreaId, status: relation.status || "existing", relations: [], priority: relation.status === "planned" ? 1 : 0 };
+    const sourcePerson = kindByEntity.get(relation.from) === "person"; const targetPerson = kindByEntity.get(relation.to) === "person";
+    if (sourcePerson === targetPerson && (!sourceAreaId || !targetAreaId || sourceAreaId === targetAreaId)) continue;
+    const source = sourcePerson ? `entity:${relation.from}` : `area:${sourceAreaId}`;
+    const target = targetPerson ? `entity:${relation.to}` : `area:${targetAreaId}`;
+    if (source.endsWith("undefined") || target.endsWith("undefined") || source === target) continue;
+    const key = `${source}->${target}:${relation.status || "existing"}`;
+    const current = grouped.get(key) || { id: `area-relation:${key}`, source, target, sourceAreaId: sourceAreaId || targetAreaId, targetAreaId: targetAreaId || sourceAreaId, status: relation.status || "existing", relations: [], priority: relation.status === "planned" ? 1 : 0 };
     current.relations.push(relation); grouped.set(key, current);
   }
   return [...grouped.values()].map((edge) => ({ ...edge, type: "area-relation", label: edge.relations.length === 1 ? (edge.relations[0].ownerLabel || edge.relations[0].label || "связь областей") : `${edge.relations.length} связей между областями`, relationId: edge.relations.length === 1 ? edge.relations[0].id : "" }));
@@ -316,15 +366,19 @@ async function routeView(snapshot, geometry, hierarchy, colors, includeEdge = ()
   for (const [areaId, areaEdges] of local) routed.push(...await routeEdges(areaEdges, boxesByArea.get(areaId) || new Map(), obstaclesByArea.get(areaId) || []));
   if (cross.length) routed.push(...await routeEdges(cross, boxes, obstacles));
   const workColors = { active: "#f09a52", blocked: "#ed716a", planned: "#e1b45d" };
-  const routes = routed.map((route) => ({ ...route, color: route.type === "work" ? workColors[route.status] || workColors.active : colors.get(route.sourceAreaId) || "#b88f72" }));
+  const routes = routed.map((route) => ({ ...route, color: route.type === "work" ? workColors[route.status] || workColors.active : colors.get(route.sourceAreaId) || colors.get(route.targetAreaId) || "#b88f72" }));
   return { routes };
 }
 
 async function routeAreaView(snapshot, geometry, colors, includeEdge = () => true) {
   const boxes = new Map(); const obstacles = [];
   for (const [id, rect] of geometry.areas) { boxes.set(`area:${id}`, rect); obstacles.push({ ...rect, id: `area:${id}` }); }
+  for (const entity of snapshot.entities.filter((item) => item.kind === "person")) {
+    const rect = geometry.entities.get(entity.id); if (!rect) continue;
+    boxes.set(`entity:${entity.id}`, rect); obstacles.push({ ...rect, id: `entity:${entity.id}` });
+  }
   const edges = aggregateAreaRelations(snapshot).filter(includeEdge).sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
-  return (await routeEdges(edges, boxes, obstacles)).map((route) => ({ ...route, color: colors.get(route.sourceAreaId) || "#b88f72" }));
+  return (await routeEdges(edges, boxes, obstacles)).map((route) => ({ ...route, color: colors.get(route.sourceAreaId) || colors.get(route.targetAreaId) || "#b88f72" }));
 }
 
 function mergeRoutes(current, updates) { const merged = new Map((current || []).map((route) => [route.id, route])); for (const route of updates || []) merged.set(route.id, route); return [...merged.values()]; }
@@ -334,24 +388,25 @@ let liveContext = null;
 async function routeLiveMoves(message, emitPriority) {
   if (!liveContext || liveContext.revision !== message.revision || !Array.isArray(message.moves) || !message.moves.length) return null;
   const geometry = { ...liveContext.geometry, areas: new Map(liveContext.geometry.areas), entities: new Map(liveContext.geometry.entities), work: new Map(liveContext.geometry.work) };
-  const movedNodeIds = new Set(); const movedAreaIds = new Set();
+  const movedNodeIds = new Set(); const movedAreaIds = new Set(); const movedPersonIds = new Set();
   for (const move of message.moves) {
     const nodeId = String(move.id || ""); const [kind, ...rest] = nodeId.split(":"); const id = rest.join(":"); const collection = kind === "area" ? geometry.areas : kind === "entity" ? geometry.entities : kind === "work" ? geometry.work : null; const current = collection?.get(id);
     if (!current || !Number.isFinite(move.x) || !Number.isFinite(move.y)) continue;
     collection.set(id, { ...current, x: move.x, y: move.y }); movedNodeIds.add(nodeId);
     if (kind === "area") movedAreaIds.add(id);
+    if (kind === "entity" && liveContext.hierarchy.byId.get(id)?.kind === "person") movedPersonIds.add(id);
   }
   if (!movedNodeIds.size) return null;
   // At the overview zoom these are the only visible relations, so publish them
   // before doing any hidden entity-level routing work.
-  const areaRoutes = movedAreaIds.size ? await routeAreaView(liveContext.snapshot, geometry, liveContext.colors, (edge) => movedAreaIds.has(edge.source.replace(/^area:/, "")) || movedAreaIds.has(edge.target.replace(/^area:/, ""))) : [];
+  const areaRoutes = movedAreaIds.size || movedPersonIds.size ? await routeAreaView(liveContext.snapshot, geometry, liveContext.colors, (edge) => movedAreaIds.has(edge.source.replace(/^area:/, "")) || movedAreaIds.has(edge.target.replace(/^area:/, "")) || movedPersonIds.has(edge.source.replace(/^entity:/, "")) || movedPersonIds.has(edge.target.replace(/^entity:/, ""))) : [];
   liveContext.geometry = geometry;
   if (areaRoutes.length) {
     liveContext.areaRoutes = mergeRoutes(liveContext.areaRoutes, areaRoutes);
     emitPriority?.({ routes: [], areaRoutes });
   }
   // Detailed routes only need their final geometry after the area is released.
-  if (movedAreaIds.size && !message.settle) return null;
+  if ((movedAreaIds.size || movedPersonIds.size) && !message.settle) return null;
   const routes = (await routeView(liveContext.snapshot, geometry, liveContext.hierarchy, liveContext.colors, (edge) => movedNodeIds.has(edge.source) || movedNodeIds.has(edge.target))).routes;
   liveContext.routes = mergeRoutes(liveContext.routes, routes);
   return { routes, areaRoutes: [] };
@@ -375,6 +430,7 @@ async function calculate(snapshot, revision, emitPartial) {
       entities.set(id, absolute);
     }
   }
+  for (const [id, rect] of placePeople(snapshot, areas, entities)) entities.set(id, rect);
   const hierarchy = ancestors(snapshot.entities);
   const work = workPositions(snapshot, entities, areas);
   const allRects = [...areas.values(), ...entities.values(), ...work.values()];

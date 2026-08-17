@@ -50,6 +50,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .project-all span, .tree-area header > button:first-child span, .now-list button span { display: flex; min-width: 0; flex-direction: column; }
 .project-all strong, .tree-area strong, .now-list strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .project-all small, .tree-area small, .now-list small { margin-top: 2px; color: #a09388; font-size: 10px; }
+.people-tree { display: grid; gap: 4px; margin: 10px 4px 5px; padding: 10px 8px; border: 1px solid #ede1d6; border-radius: 14px; background: rgba(255, 253, 249, .62); }
+.people-tree > small { margin-bottom: 3px; color: #aa9585; font: 700 8px var(--mono); letter-spacing: .13em; }
+.people-tree > button { display: flex; align-items: center; gap: 8px; overflow: hidden; padding: 5px 3px; border: 0; background: transparent; color: #75685f; cursor: pointer; font-size: 10px; text-align: left; }
+.people-tree > button:hover { color: #352d28; }
+.people-tree > button i { flex: 0 0 auto; width: 13px; height: 13px; border: 1.5px solid #d28c5f; border-radius: 50%; background: #fff6ed; box-shadow: 0 0 0 4px rgba(226, 143, 87, .1); }
+.people-tree > button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-tree { display: grid; gap: 4px; margin-top: 8px; }
 .tree-area > header { display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: center; }
 .tree-area header > button:first-child { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 8px; border-radius: 12px; }
@@ -156,6 +162,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .entity-node.is-active { border-color: #e99652; box-shadow: 0 0 0 5px rgba(244, 162, 88, .16), 0 0 48px rgba(244, 162, 88, .22); animation: active-node 1.8s ease-in-out infinite; }
 .entity-node > b { position: absolute; top: -8px; right: -8px; display: grid; place-items: center; min-width: 24px; height: 24px; padding: 0 7px; border: 3px solid #fffaf4; border-radius: 999px; background: #ec9452; color: white; font-size: 9px; }
 
+.person-node { display: flex; align-items: center; width: 100%; height: 100%; padding: 0 5px; border: 0; background: transparent; cursor: grab; flex-direction: column; text-align: center; transition: opacity .16s ease, filter .16s ease; }
+.person-node:active { cursor: grabbing; }
+.person-node:hover { filter: saturate(1.06) drop-shadow(0 12px 18px rgba(110, 75, 50, .12)); }
+.person-avatar { position: relative; display: block; flex: 0 0 auto; width: 88px; height: 88px; border: 2px solid color-mix(in srgb, var(--area-color) 70%, #cbb6a4); border-radius: 50%; background: radial-gradient(circle at 38% 28%, #fffdf9 0 18%, color-mix(in srgb, var(--area-color) 17%, #fff7ef) 62%, color-mix(in srgb, var(--area-color) 28%, #f4e7dc)); box-shadow: 0 0 0 9px color-mix(in srgb, var(--area-color) 9%, transparent), 0 13px 28px rgba(91, 65, 45, .13); }
+.person-avatar > i { position: absolute; top: 20px; left: 50%; width: 24px; height: 24px; transform: translateX(-50%); border-radius: 50%; background: color-mix(in srgb, var(--area-color) 70%, #98725b); }
+.person-avatar > b { position: absolute; right: 19px; bottom: 15px; left: 19px; height: 29px; border-radius: 22px 22px 15px 15px; background: color-mix(in srgb, var(--area-color) 63%, #98725b); }
+.person-node > strong { overflow: hidden; width: 100%; margin-top: 13px; color: #493c34; font-size: 12px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.person-node > small { display: -webkit-box; overflow: hidden; margin-top: 5px; color: #9a8b80; font-size: 8px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
 .work-node { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; height: 100%; padding: 11px 14px; border: 1.5px dashed #e39a58; border-radius: 18px; background: #fff9ee; box-shadow: 0 12px 28px rgba(129, 88, 49, .12), 0 0 0 6px rgba(238, 160, 91, .08); cursor: pointer; text-align: left; transition: opacity .16s ease, transform .16s ease; }
 .work-node.is-concealed { pointer-events: none; opacity: 0; }
 .work-node.is-readable { opacity: 1; }
@@ -197,6 +212,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .legend p b { font-size: 10px; }
 .legend p small { margin-top: 2px; color: #978a80; font-size: 8px; line-height: 1.35; }
 .legend-area { border: 1px dashed #deaa7f; border-radius: 7px; background: #fff3e8; }
+.legend-person { width: 20px !important; height: 20px !important; margin-left: 4px; border: 1.5px solid #d58b5c; border-radius: 50%; background: #fff3e8; box-shadow: 0 0 0 4px rgba(213, 139, 92, .1); }
 .legend-line::after, .legend-dash::after { position: absolute; top: 5px; right: 0; left: 0; border-top: 2px solid #d09767; content: ""; }
 .legend-dash::after { border-top-style: dashed; }
 .legend-pulse { border: 2px solid #e99b57; border-radius: 50%; box-shadow: 0 0 0 5px rgba(233, 155, 87, .14); }
@@ -247,6 +263,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 :root[data-theme="dark"] .legend header { border-color: #39322d; }
 :root[data-theme="dark"] .project-all:hover,
 :root[data-theme="dark"] .project-all.is-active,
+:root[data-theme="dark"] .people-tree,
 :root[data-theme="dark"] .tree-area header > button:first-child:hover,
 :root[data-theme="dark"] .tree-area header > button:first-child.is-active,
 :root[data-theme="dark"] .tree-toggle:hover { background: #302a25; }
@@ -269,6 +286,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 :root[data-theme="dark"] .project-tree > section > div > button,
 :root[data-theme="dark"] .activity-list p { color: #b8aaa0; }
 :root[data-theme="dark"] .project-tree > section > div > button:hover { color: #fff8f1; }
+:root[data-theme="dark"] .people-tree { border-color: #443a33; background: rgba(35, 31, 28, .64); }
+:root[data-theme="dark"] .people-tree > button { color: #c3b5aa; }
+:root[data-theme="dark"] .people-tree > button:hover { color: #fff8f1; }
+:root[data-theme="dark"] .people-tree > button i { border-color: #d58b5c; background: #33281f; }
 :root[data-theme="dark"] .now-list button { border-color: #674d38; background: #2a231d; }
 :root[data-theme="dark"] .canvas-wrap { background: radial-gradient(circle at 15% 10%, rgba(115, 80, 52, .15), transparent 32%), radial-gradient(circle at 88% 18%, rgba(105, 60, 62, .12), transparent 26%), #171513; }
 :root[data-theme="dark"] .area-node { border-color: color-mix(in srgb, var(--area-color) 50%, #4b423b); background: color-mix(in srgb, var(--area-color) 7%, rgba(29, 26, 23, .82)); }
@@ -280,6 +301,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 :root[data-theme="dark"] .area-node b { background: color-mix(in srgb, var(--area-color) 22%, #2a241f); color: #f1dfd1; }
 :root[data-theme="dark"] .entity-node { border-color: color-mix(in srgb, var(--area-color) 55%, #51463e); background: rgba(35, 31, 28, .98); box-shadow: 0 12px 34px rgba(0, 0, 0, .24), 0 0 0 5px color-mix(in srgb, var(--area-color) 6%, transparent); }
 :root[data-theme="dark"] .entity-node.is-group { background: color-mix(in srgb, var(--area-color) 6%, rgba(31, 28, 25, .96)); }
+:root[data-theme="dark"] .person-avatar { border-color: color-mix(in srgb, var(--area-color) 74%, #766050); background: radial-gradient(circle at 38% 28%, #42362d 0 18%, color-mix(in srgb, var(--area-color) 18%, #2d2722) 62%, color-mix(in srgb, var(--area-color) 28%, #251f1b)); box-shadow: 0 0 0 9px color-mix(in srgb, var(--area-color) 10%, transparent), 0 13px 30px rgba(0, 0, 0, .35); }
+:root[data-theme="dark"] .person-node > strong { color: #f2e8df; }
+:root[data-theme="dark"] .person-node > small { color: #aa9c92; }
 :root[data-theme="dark"] .map-drag-handle { border-color: #51463e; background: rgba(39, 34, 30, .94); color: #bdaea2; }
 :root[data-theme="dark"] .work-node { border-color: #f09a52; background: #30241b; color: #f6e9de; box-shadow: 0 14px 32px rgba(0, 0, 0, .28), 0 0 0 6px rgba(238, 160, 91, .1); }
 :root[data-theme="dark"] .work-node.blocked { background: #34201f; }

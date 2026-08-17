@@ -126,7 +126,7 @@ test("one observer tracks Claude and Kimi sessions only for the selected reposit
   ]);
   const restarted = new SessionObserver({
     config: { enabled: true, repoRoot: repo, providers: ["claude", "kimi"], pollMs: 250 },
-    state: sharedState, adapters: [claudeSessionAdapter, kimiSessionAdapter], runner,
+    state: observer.state, adapters: [claudeSessionAdapter, kimiSessionAdapter], runner,
   });
   const restartedSummary = await restarted.tick();
   assert.equal(restartedSummary.trackedSessions, 3, "a new session created between observer processes must not be baselined away");

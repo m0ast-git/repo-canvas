@@ -4,7 +4,7 @@ const id = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:>\\-]{0,127}$" }
 const stringArray = { type: "array", items: { type: "string" } };
 const entityStatus = { type: "string", enum: ["operational", "disabled", "problem", "planned"] };
 const relationStatus = { type: "string", enum: ["existing", "planned"] };
-const entityKind = { type: "string", enum: ["capability", "module", "service", "process", "store", "interface", "integration", "external", "component"] };
+const entityKind = { type: "string", enum: ["capability", "module", "service", "process", "store", "interface", "integration", "external", "component", "person"] };
 const relationKind = { type: "string", enum: ["runtime", "data", "control", "event", "contract", "dependency"] };
 
 const flowSchema = {
@@ -26,7 +26,7 @@ const areaSchema = {
 const entitySchema = {
   type: "object", additionalProperties: false,
   properties: {
-    id, areaId: id, parentId: { type: "string" }, label: { type: "string" }, kind: entityKind,
+    id, areaId: { type: "string", maxLength: 128 }, parentId: { type: "string" }, label: { type: "string" }, kind: entityKind,
     status: entityStatus, path: { type: "string" }, purpose: { type: "string" }, note: { type: "string" },
     evidence: stringArray, order: { type: "number" },
   },
@@ -53,6 +53,32 @@ export const ARCHITECT_OUTPUT_SCHEMA = {
     removedAreaIds: { type: "array", items: id }, removedEntityIds: { type: "array", items: id }, removedRelationIds: { type: "array", items: id },
   },
   required: ["projectTitle", "projectSummary", "layoutIntent", "layoutDirection", "keyFlows", "unresolvedQuestions", "areas", "entities", "relations", "removedAreaIds", "removedEntityIds", "removedRelationIds"],
+};
+
+const reviewIssueSchema = {
+  type: "object", additionalProperties: false,
+  properties: {
+    severity: { type: "string", enum: ["critical", "warning"] },
+    scope: { type: "string", enum: ["map", "area", "entity", "relation", "flow"] },
+    id: { type: "string" }, message: { type: "string" }, recommendation: { type: "string" },
+  },
+  required: ["severity", "scope", "id", "message", "recommendation"],
+};
+
+export const ARCHITECT_REVIEW_SCHEMA = {
+  type: "object", additionalProperties: false,
+  properties: {
+    passed: { type: "boolean" }, summary: { type: "string" },
+    answers: {
+      type: "object", additionalProperties: false,
+      properties: {
+        project: { type: "string" }, composition: { type: "string" }, lifecycle: { type: "string" },
+      },
+      required: ["project", "composition", "lifecycle"],
+    },
+    issues: { type: "array", items: reviewIssueSchema },
+  },
+  required: ["passed", "summary", "answers", "issues"],
 };
 
 const entityChangeSchema = {
@@ -112,7 +138,11 @@ export function validateArchitecture(value, snapshot = getSnapshot()) {
   const entityIds = new Set([...snapshot.entities.filter((item) => !removedEntities.has(item.id) && !removedAreas.has(item.areaId)).map((item) => item.id), ...value.entities.map((item) => item.id)]);
   const entitiesById = new Map([...snapshot.entities, ...value.entities].map((item) => [item.id, item]));
   for (const entity of value.entities) {
-    if (!areaIds.has(entity.areaId)) throw new Error(`Unknown entity area '${entity.areaId}'`);
+    if (entity.kind === "person") {
+      if (entity.areaId) throw new Error(`Person '${entity.id}' must stay outside project areas`);
+      if (entity.parentId) throw new Error(`Person '${entity.id}' cannot have a parent entity`);
+      if (entity.path) throw new Error(`Person '${entity.id}' cannot use a repository path as its identity`);
+    } else if (!areaIds.has(entity.areaId)) throw new Error(`Unknown entity area '${entity.areaId}'`);
     if (entity.parentId) {
       const parent = entitiesById.get(entity.parentId);
       if (!parent || removedEntities.has(parent.id)) throw new Error(`Unknown entity parent '${entity.parentId}'`);
@@ -120,7 +150,16 @@ export function validateArchitecture(value, snapshot = getSnapshot()) {
     }
   }
   orderEntities(value.entities);
-  for (const relation of value.relations) if (!entityIds.has(relation.from) || !entityIds.has(relation.to)) throw new Error(`Unknown relation endpoint '${relation.id}'`);
+  const relationEndpoints = new Set();
+  for (const relation of value.relations) {
+    if (!entityIds.has(relation.from) || !entityIds.has(relation.to)) throw new Error(`Unknown relation endpoint '${relation.id}'`);
+    relationEndpoints.add(relation.from); relationEndpoints.add(relation.to);
+    if (relation.status === "planned") {
+      const from = entitiesById.get(relation.from); const to = entitiesById.get(relation.to);
+      if (from?.status !== "planned" && to?.status !== "planned") throw new Error(`Planned relation '${relation.id}' must touch a planned entity`);
+    }
+  }
+  for (const entity of value.entities) if (entity.kind === "person" && !relationEndpoints.has(entity.id)) throw new Error(`Person '${entity.id}' must have at least one explanatory relation`);
   for (const flow of value.keyFlows || []) for (const step of flow.steps || []) if (!entityIds.has(step)) throw new Error(`Unknown key-flow step '${step}'`);
   return value;
 }
@@ -155,7 +194,11 @@ export function observerEvents(decision, context) {
   const existingRelations = new Map(snapshot.relations.map((item) => [item.id, item]));
   const upserts = [];
   const removals = [];
-  const targets = [...new Set((decision.targetEntityIds || []).filter((target) => existingEntities.has(target) || decision.entityChanges?.some((change) => change.operation === "upsert" && change.entityId === target)))];
+  const changedEntities = new Map((decision.entityChanges || []).filter((change) => change.operation === "upsert").map((change) => [change.entityId, change]));
+  const targets = [...new Set((decision.targetEntityIds || []).filter((target) => {
+    const entity = existingEntities.get(target) || changedEntities.get(target);
+    return entity && entity.kind !== "person";
+  }))];
   const workEvent = createEvent("work.upsert", { actor: "observer", payload: {
     id: context.workId, title: decision.workTitle || "Agent work", status: decision.workStatus,
     targets, note: decision.workSummary || "", provisional: targets.length === 0, session: context.session,

@@ -106,6 +106,19 @@ for (let area = 0; area < areaCount; area += 1) {
 }
 await pool(entityCommands);
 
+const people = [
+  ["procurement-operator", "Оператор закупок", "Передаёт спецификацию и принимает результат проверки", "module-1-5", "передаёт спецификацию"],
+  ["quality-reviewer", "Эксперт по качеству", "Принимает решение по спорным результатам", "module-4-8", "подтверждает решение"],
+  ["platform-owner", "Владелец платформы", "Получает сводное состояние производственного контура", "module-7-12", "получает сводку"],
+  ["support-operator", "Оператор поддержки", "Передаёт обращение и получает статус обработки", "module-9-7", "передаёт обращение"],
+  ["external-auditor", "Внешний аудитор", "Запрашивает доказательства и принимает отчёт", "module-11-16", "запрашивает доказательства"],
+  ["delivery-manager", "Руководитель поставки", "Получает подтверждение готовности результата", "module-12-20", "получает подтверждение"],
+];
+await pool(people.map(([id, label, purpose]) => [
+  "entity", "--id", id, "--label", label, "--status", "operational", "--kind", "person",
+  "--purpose", purpose, "--actor", "stress",
+]));
+
 const relationCommands = [];
 for (let area = 0; area < areaCount; area += 1) {
   for (let index = 1; index < entitiesPerArea; index += 1) {
@@ -127,6 +140,12 @@ for (let area = 0; area < areaCount; area += 1) {
       ]);
     }
   }
+}
+for (const [id, , , target, label] of people) {
+  relationCommands.push([
+    "relation", "--from", id, "--to", target, "--label", label, "--kind", "data",
+    "--contract", "явный пользовательский результат", "--mechanism", "интерфейс продукта", "--actor", "stress",
+  ]);
 }
 await pool(relationCommands);
 

@@ -16,7 +16,7 @@ Install this project-visualization tool in the current repository, build the ini
 The agent will follow [`INSTALL_WITH_AGENT.txt`](INSTALL_WITH_AGENT.txt). The exact commands are:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.9.1
+npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.10.0
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```
@@ -27,6 +27,7 @@ The server opens the protected loopback URL in your default browser. Keep that f
 
 - project areas that group related parts of the system;
 - persistent modules, responsibilities, stores, pipeline stages and integrations;
+- circular human participants outside project areas, with directed relations showing what they provide, decide, expect or receive;
 - meaningful runtime, data and control-flow relations;
 - a provisional work card as soon as a supported agent turn is observed;
 - live work attached to every semantic entity it affects;
@@ -48,9 +49,9 @@ Dragging empty canvas space always moves the camera. An area moves from its fram
 
 ## How it works
 
-`setup` checks the local Codex connection, then runs a read-only Architect with `gpt-5.6-sol` at medium reasoning. Architect inspects the repository once and builds its semantic map in the owner's working language. Human-visible labels follow the owner's viewpoint and product documentation instead of copying unexplained code jargon.
+`setup` checks the local Codex connection, then runs a read-only Architect with `gpt-5.6-sol` at medium reasoning. Architect inventories current repository truth, identifies responsibility boundaries and builds the map in the owner's working language. Human-visible labels explain the product instead of copying unexplained code jargon. A human role appears only when the product genuinely involves that participant; it stays outside project-owned areas and is connected to the exact responsibility it touches.
 
-Before anything is written, Repo Canvas validates area membership, hierarchy, relation endpoints, removal references and every end-to-end flow step. If the model returns an inconsistent cross-reference, the expensive inspection result is retained and sent through a bounded structural repair using an explicit enum of allowed ids. The corrected result is validated again and only a fully valid map is applied.
+Before anything is written, Repo Canvas validates area membership, hierarchy, evidence paths, relation endpoints, removal references, participant placement and every end-to-end flow step. If the model returns an inconsistent cross-reference, the expensive inspection result is retained and sent through a bounded structural repair using an explicit enum of allowed ids. A separate low-cost reviewer then sees only the proposed map and answers what the project does, how it is divided and how its main lifecycle works. If that reader cannot understand the map, Architect gets one full evidence-backed regeneration; an incomprehensible result is never applied.
 
 When the Canvas server is running, Observer watches public local session journals for this repository. It creates a provisional card on the first observed turn event, then uses `gpt-5.4-mini` to classify small event deltas and attach the work to the map. On completion, Observer updates affected passports and relations when the session contains enough evidence.
 
@@ -63,7 +64,7 @@ Observer supports:
 | Claude Code CLI | Yes | `claude --resume <session>` |
 | Kimi Code CLI | Yes | `kimi -r <session>` |
 
-Observer reads public user messages, agent messages and tool-call metadata. Claude `thinking`, Kimi `think`, hidden reasoning and tool results are ignored. It filters sessions by repository root and does not rescan product files during observation.
+Observer reads public user messages, agent messages and tool-call metadata. Claude `thinking`, Kimi `think`, hidden reasoning and tool results are ignored. It filters sessions by repository root and does not rescan product files during observation. Its local cursor file keeps only compact session identity and bounded recent turn state, writes only after a real change and retries short-lived Windows file locks, so a large session history does not turn every poll into a full rewrite.
 
 ## Requirements and installation footprint
 
@@ -82,12 +83,12 @@ From v0.8.6 onward, Canvas checks the public GitHub release feed in the backgrou
 
 ## Offline installation
 
-Download `repo-canvas-0.9.1-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.9.1.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
+Download `repo-canvas-0.10.0-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.10.0.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
 
 Manual commands:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.9.1.tgz
+npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.10.0.tgz
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```
@@ -109,6 +110,8 @@ Model profiles can be overridden without code changes:
 ```text
 REPO_CANVAS_ARCHITECT_MODEL
 REPO_CANVAS_ARCHITECT_EFFORT
+REPO_CANVAS_REVIEWER_MODEL
+REPO_CANVAS_REVIEWER_EFFORT
 REPO_CANVAS_OBSERVER_MODEL
 REPO_CANVAS_OBSERVER_EFFORT
 ```

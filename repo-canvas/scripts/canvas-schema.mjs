@@ -125,7 +125,12 @@ export function validateEvent(event) {
     optionalString(errors, payload.reason, "payload.reason", 2000);
   } else if (event.type === "entity.upsert") {
     requireString(errors, payload.id, "payload.id", { max: 128, id: true });
-    requireString(errors, payload.areaId, "payload.areaId", { max: 128, id: true });
+    if (payload.kind === "person") {
+      optionalString(errors, payload.areaId, "payload.areaId", 128);
+      if (payload.areaId) errors.push("payload.areaId must be empty for a person");
+      if (payload.parentId) errors.push("payload.parentId must be empty for a person");
+      if (payload.path) errors.push("payload.path must be empty for a person");
+    } else requireString(errors, payload.areaId, "payload.areaId", { max: 128, id: true });
     requireString(errors, payload.label, "payload.label", { max: 240 });
     requireStatus(errors, payload.status, "payload.status", ENTITY_STATUSES);
     optionalString(errors, payload.path, "payload.path", 1000);
@@ -177,6 +182,7 @@ export function validateEventSequence(eventsWithLines) {
   const areas = new Set();
   const entities = new Set();
   const entityAreas = new Map();
+  const entityKinds = new Map();
 
   for (const { event, line } of eventsWithLines) {
     if (eventIds.has(event.id)) errors.push({ line, id: event.id, message: "duplicate event id" });
@@ -188,25 +194,33 @@ export function validateEventSequence(eventsWithLines) {
         if (areaId === event.payload.id) {
           entities.delete(entityId);
           entityAreas.delete(entityId);
+          entityKinds.delete(entityId);
         }
       }
     }
     if (event.type === "entity.upsert") {
       entities.add(event.payload.id);
       entityAreas.set(event.payload.id, event.payload.areaId);
-      if (!areas.has(event.payload.areaId)) errors.push({ line, id: event.id, message: `entity area '${event.payload.areaId}' does not exist` });
+      entityKinds.set(event.payload.id, event.payload.kind || "component");
+      if (event.payload.kind === "person") {
+        if (event.payload.areaId) errors.push({ line, id: event.id, message: "person must stay outside project areas" });
+      } else if (!areas.has(event.payload.areaId)) errors.push({ line, id: event.id, message: `entity area '${event.payload.areaId}' does not exist` });
       if (event.payload.parentId && !entities.has(event.payload.parentId)) errors.push({ line, id: event.id, message: `entity parent '${event.payload.parentId}' does not exist` });
     }
     if (event.type === "entity.remove") {
       entities.delete(event.payload.id);
       entityAreas.delete(event.payload.id);
+      entityKinds.delete(event.payload.id);
     }
     if (event.type === "relation.upsert") {
       if (!entities.has(event.payload.from)) errors.push({ line, id: event.id, message: `relation source '${event.payload.from}' does not exist` });
       if (!entities.has(event.payload.to)) errors.push({ line, id: event.id, message: `relation target '${event.payload.to}' does not exist` });
     }
     if (event.type === "work.upsert") {
-      for (const target of event.payload.targets) if (!entities.has(target)) errors.push({ line, id: event.id, message: `work target '${target}' does not exist` });
+      for (const target of event.payload.targets) {
+        if (!entities.has(target)) errors.push({ line, id: event.id, message: `work target '${target}' does not exist` });
+        else if (entityKinds.get(target) === "person") errors.push({ line, id: event.id, message: `work cannot target person '${target}'` });
+      }
     }
   }
   return errors;

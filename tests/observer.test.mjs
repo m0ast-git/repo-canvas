@@ -8,6 +8,12 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-observer-"));
 const sessionsRoot = path.join(root, "sessions");
 fs.mkdirSync(sessionsRoot, { recursive: true });
 fs.writeFileSync(path.join(root, "package.json"), '{"name":"observer-fixture","private":true}\n');
+for (const directory of ["src/entry", "src/output", "src/sales", "src/ops", "src/contracts"]) {
+  fs.mkdirSync(path.join(root, directory), { recursive: true });
+}
+for (const file of ["src/sales/index.ts", "src/sales/checkout.ts", "src/ops/index.ts", "src/contracts/accepted-order.ts"]) {
+  fs.writeFileSync(path.join(root, file), "// evidence fixture\n");
+}
 process.env.REPO_CANVAS_ROOT = root;
 process.env.REPO_CANVAS_DATA_DIR = path.join(root, ".repo-canvas");
 
@@ -16,7 +22,18 @@ const schema = await import("../repo-canvas/scripts/canvas-schema.mjs");
 const sessions = await import("../repo-canvas/scripts/codex-sessions.mjs");
 const semantic = await import("../repo-canvas/scripts/semantic-model.mjs");
 const architect = await import("../repo-canvas/scripts/architect.mjs");
-const { CodexObserver, observerPrompt } = await import("../repo-canvas/scripts/observer.mjs");
+const runtime = await import("../repo-canvas/scripts/runtime-config.mjs");
+const { CodexObserver, compactObserverState, observerPrompt } = await import("../repo-canvas/scripts/observer.mjs");
+
+function approvedReview(overrides = {}) {
+  return {
+    passed: true,
+    summary: "The map is understandable without repository access.",
+    answers: { project: "A fixture", composition: "One area", lifecycle: "Input becomes output" },
+    issues: [],
+    ...overrides,
+  };
+}
 
 function emit(type, payload) {
   store.appendEvent(store.createEvent(type, { actor: "test", payload }));
@@ -257,9 +274,15 @@ test("architect repairs invalid cross-references without repeating repository in
     if (calls === 2) repairOptions = options;
     return { value: calls === 1 ? base : repaired, profile: { model: "fake-sol", effort: "medium" }, threadId: `repair-thread-${calls}` };
   };
-  const result = await architect.runArchitect({ root, refresh: false, runner, onProgress: (progress) => phases.push(progress.phase) });
+  const result = await architect.runArchitect({
+    root, refresh: false, runner,
+    reviewer: async () => ({ value: approvedReview(), threadId: "review-thread" }),
+    onProgress: (progress) => phases.push(progress.phase),
+  });
   assert.equal(calls, 2);
   assert.equal(result.repairs, 1);
+  assert.equal(result.semanticReviews, 1);
+  assert.deepEqual(result.reviewThreadIds, ["review-thread"]);
   assert.deepEqual(result.threadIds, ["repair-thread-1", "repair-thread-2"]);
   assert.match(repairOptions.prompt, /Do not inspect files, run tools/);
   assert.deepEqual(repairOptions.outputSchema.properties.keyFlows.items.properties.steps.items.enum.includes("invented-action"), false);
@@ -268,6 +291,104 @@ test("architect repairs invalid cross-references without repeating repository in
   assert.ok(phases.includes("repairing"));
   assert.ok(phases.includes("applying"));
   assert.deepEqual(store.getSnapshot().map.keyFlows.at(-1).steps, ["repair-entry", "repair-output"]);
+});
+
+test("architect keeps people outside areas and requires a meaningful relation", () => {
+  const person = {
+    id: "operator", areaId: "", parentId: "", label: "Оператор закупок", kind: "person",
+    status: "operational", path: "", purpose: "Передаёт спецификацию и принимает результат",
+    note: "", evidence: [], order: 1,
+  };
+  const candidate = {
+    projectTitle: "Проверка спецификаций", projectSummary: "Оператор передаёт спецификацию, система проверяет её и возвращает результат.",
+    layoutIntent: "flow", layoutDirection: "RIGHT", keyFlows: [], unresolvedQuestions: [],
+    areas: [{ id: "review", title: "Проверка данных", note: "Проверяет входные строки", color: "#ef9a72", evidence: [], order: 1 }],
+    entities: [person, { id: "intake", areaId: "review", parentId: "", label: "Приём спецификации", kind: "interface", status: "operational", path: "", purpose: "Принимает файл на проверку", note: "", evidence: [], order: 1 }],
+    relations: [{ id: "operator-submits", from: "operator", to: "intake", label: "передаёт спецификацию", kind: "data", contract: "", mechanism: "загрузка файла", evidence: [], status: "existing" }],
+    removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
+  };
+  assert.doesNotThrow(() => semantic.validateArchitecture(candidate));
+  assert.throws(() => semantic.validateArchitecture({ ...candidate, relations: [] }), /must have at least one explanatory relation/);
+  const events = semantic.architectureEvents(candidate, { actor: "architect-test" });
+  for (const event of events) assert.deepEqual(schema.validateEvent(event), []);
+  assert.deepEqual(schema.validateEventSequence(events.map((event, index) => ({ event, line: index + 1 }))), []);
+  const [work] = semantic.observerEvents({
+    workTitle: "Работа оператора", workSummary: "Меняет человека", workStatus: "active", targetEntityIds: ["operator"], entityChanges: [], relationChanges: [],
+  }, { workId: "person-work", final: false });
+  assert.deepEqual(work.payload.targets, []);
+  assert.equal(work.payload.provisional, true);
+});
+
+test("blind review can trigger one full semantic regeneration before apply", async () => {
+  const initial = {
+    projectTitle: "Fixture", projectSummary: "Technical subsystems", layoutIntent: "domain", layoutDirection: "AUTO", keyFlows: [], unresolvedQuestions: [],
+    areas: [{ id: "misc", title: "User product", note: "Mixed things", color: "#ef9a72", evidence: [], order: 1 }],
+    entities: [{ id: "worker", areaId: "misc", parentId: "", label: "Worker", kind: "service", status: "operational", path: "", purpose: "Does work", note: "", evidence: [], order: 1 }],
+    relations: [], removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
+  };
+  const regenerated = structuredClone(initial);
+  regenerated.projectSummary = "Accepts a request, performs the fixture operation and returns its result.";
+  regenerated.areas[0].title = "Request processing";
+  regenerated.entities[0].label = "Fixture operation";
+  regenerated.entities[0].purpose = "Turns an accepted request into the returned fixture result";
+  let architectCalls = 0;
+  let reviewCalls = 0;
+  const result = await architect.runArchitect({
+    root, refresh: false,
+    runner: async () => ({ value: architectCalls++ === 0 ? initial : regenerated, profile: { model: "fake-sol", effort: "medium" }, threadId: `architect-${architectCalls}` }),
+    reviewer: async () => ({
+      value: reviewCalls++ === 0
+        ? approvedReview({ passed: false, summary: "The project purpose is unclear", answers: { project: "Unknown", composition: "Mixed", lifecycle: "Unknown" }, issues: [{ severity: "critical", scope: "map", id: "summary", message: "No end-to-end purpose", recommendation: "Explain input and result" }] })
+        : approvedReview(),
+      threadId: `review-${reviewCalls}`,
+    }),
+  });
+  assert.equal(result.semanticRegenerations, 1);
+  assert.equal(result.semanticReviews, 2);
+  assert.equal(store.getSnapshot().map.projectSummary, regenerated.projectSummary);
+});
+
+test("observer state stays compact and atomic replacement retries transient Windows locks", () => {
+  const state = { version: 2, initializedProviders: ["codex"], sessions: {} };
+  for (let index = 0; index < 895; index += 1) {
+    state.sessions[`session-${index}`] = {
+      offset: index, relevant: index % 3 === 0, provider: "codex",
+      meta: { id: `id-${index}`, cwd: root, originator: "codex_desktop", instructions: "x".repeat(20_000), env: { SECRET: "discard" } },
+      turns: {},
+    };
+  }
+  const compacted = compactObserverState(state);
+  assert.ok(JSON.stringify(compacted).length < 500_000);
+  assert.equal(compacted.sessions["session-0"].meta.instructions, undefined);
+  assert.equal(compacted.sessions["session-0"].meta.env, undefined);
+
+  let attempts = 0;
+  const waits = [];
+  runtime.replaceFileSync("temporary", "target", {
+    rename: () => {
+      attempts += 1;
+      if (attempts < 4) throw Object.assign(new Error("locked"), { code: "EPERM" });
+    },
+    wait: (delay) => waits.push(delay),
+  });
+  assert.equal(attempts, 4);
+  assert.deepEqual(waits, [10, 20, 40]);
+});
+
+test("idle observer polls do not rewrite unchanged state", async () => {
+  const file = path.join(sessionsRoot, "idle-session.jsonl");
+  fs.writeFileSync(file, "");
+  let writes = 0;
+  const observer = new CodexObserver({
+    config: { enabled: true, repoRoot: root, providers: ["codex"], pollMs: 250 },
+    state: { version: 3, initializedProviders: [], sessions: {} },
+    adapters: [{ id: "codex", listFiles: () => [file], readMeta: () => ({ id: "idle", cwd: root, originator: "codex_desktop" }), belongsToRepository: () => true, signals: () => [], locator: () => ({ kind: "codex-app", id: "idle", cwd: root }) }],
+    writeState: () => { writes += 1; }, discoveryIntervalMs: 0,
+  });
+  await observer.tick();
+  await observer.tick();
+  await observer.tick();
+  assert.equal(writes, 1);
 });
 
 test("architect prompt makes owner language and reference preflight explicit", () => {

@@ -15,6 +15,10 @@ export const MODEL_PROFILES = Object.freeze({
     model: process.env.REPO_CANVAS_OBSERVER_MODEL || "gpt-5.4-mini",
     effort: process.env.REPO_CANVAS_OBSERVER_EFFORT || "low",
   }),
+  reviewer: Object.freeze({
+    model: process.env.REPO_CANVAS_REVIEWER_MODEL || "gpt-5.4-mini",
+    effort: process.env.REPO_CANVAS_REVIEWER_EFFORT || "low",
+  }),
 });
 
 const PLATFORM_PACKAGE_BY_TARGET = Object.freeze({

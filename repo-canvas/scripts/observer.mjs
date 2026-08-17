@@ -11,6 +11,37 @@ import { sessionAdapter, sessionAdapters } from "./session-adapters.mjs";
 const MAX_EVENTS = 80;
 const INITIAL_DEADLINE_MS = 5_000;
 const UPDATE_INTERVAL_MS = 30_000;
+const DISCOVERY_INTERVAL_MS = 2_000;
+const ERROR_DEDUPE_MS = 60_000;
+
+export function compactSessionMeta(meta = {}) {
+  const compact = {};
+  for (const key of ["id", "session_id", "cwd", "originator", "provider", "entrypoint", "promptSource"]) {
+    if (["string", "number", "boolean"].includes(typeof meta[key])) compact[key] = meta[key];
+  }
+  if (typeof meta.title === "string") compact.title = meta.title.slice(0, 160);
+  if (meta.env?.REPO_CANVAS_INTERNAL_SESSION === "1") compact.env = { REPO_CANVAS_INTERNAL_SESSION: "1" };
+  return compact;
+}
+
+export function compactObserverState(state = {}) {
+  const sessions = {};
+  for (const [file, session] of Object.entries(state.sessions || {})) {
+    const turns = Object.values(session.turns || {}).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+    const keptTurns = [...turns.filter((turn) => !turn.finished), ...turns.filter((turn) => turn.finished).slice(0, 24)];
+    sessions[file] = {
+      ...session,
+      meta: compactSessionMeta(session.meta),
+      turns: Object.fromEntries(keptTurns.map((turn) => [turn.turnId, turn])),
+    };
+  }
+  return {
+    version: 3,
+    initializedProviders: [...new Set(state.initializedProviders || [])],
+    sessions,
+    ...(state.updatedAt ? { updatedAt: state.updatedAt } : {}),
+  };
+}
 
 function workId(sessionId, turnId) {
   const safeSession = String(sessionId || "session").replace(/^019f/i, "").slice(-20).replace(/[^A-Za-z0-9.-]/g, "-");
@@ -38,6 +69,7 @@ Rules:
 - describe the concrete work in a short title and summary;
 - attach work to every existing semantic entity it genuinely affects;
 - target the most specific confirmed entity; the UI rolls activity up to visible parents and areas;
+- never attach work to a kind=person participant; target the project-owned capability, interface, module, service or other part being changed;
 - during active work, create a planned entity or relation only when the owner or working agent explicitly establishes the new concept, responsibility and endpoints;
 - at completion, update passports and relations only when public session evidence establishes the architectural effect;
 - keep the Architect's entity kinds, parent hierarchy and relation grammar;
@@ -85,17 +117,34 @@ export class CodexObserver {
     sessionsRoot,
     adapters,
     replay = false,
+    writeState = writeObserverState,
+    discoveryIntervalMs = DISCOVERY_INTERVAL_MS,
   } = {}) {
     this.config = config;
-    this.state = state;
+    const compacted = compactObserverState(state);
+    this.state = compacted;
     this.runner = runner;
     this.now = now;
     this.sessionsRoot = sessionsRoot;
     const configured = config.providers || (config.provider ? [config.provider] : ["codex", "claude", "kimi"]);
     this.adapters = adapters || (sessionsRoot ? [sessionAdapter("codex")] : sessionAdapters(configured));
     this.replay = replay;
+    this.writeState = writeState;
+    this.discoveryIntervalMs = discoveryIntervalMs;
     this.gitCache = new Map();
     this.running = new Map();
+    this.lastDiscoveryAt = Number.NEGATIVE_INFINITY;
+    this.dirty = JSON.stringify(compacted) !== JSON.stringify(state);
+    this.errorTimes = new Map();
+  }
+
+  markDirty() { this.dirty = true; }
+
+  reportError(message, key = message) {
+    const last = this.errorTimes.get(key) || Number.NEGATIVE_INFINITY;
+    if (this.now() - last < ERROR_DEDUPE_MS) return;
+    this.errorTimes.set(key, this.now());
+    activityError(message);
   }
 
   ensureSession(file, meta, adapter, baseline = false) {
@@ -106,10 +155,11 @@ export class CodexObserver {
         offset: this.replay || !baseline ? 0 : fs.statSync(file).size,
         relevant: false,
         provider: adapter.id,
-        meta,
+        meta: compactSessionMeta(meta),
         turns: {},
       };
       this.state.sessions[key] = session;
+      this.markDirty();
     }
     return session;
   }
@@ -127,10 +177,15 @@ export class CodexObserver {
         try { meta = known?.meta || adapter.readMeta(file, root); } catch { continue; }
         if (!meta) continue;
         const session = this.ensureSession(file, meta, adapter, baseline);
+        const relevant = adapter.belongsToRepository(meta, this.config.repoRoot, this.gitCache);
+        if (session.provider !== adapter.id || session.relevant !== relevant) this.markDirty();
         session.provider = adapter.id;
-        session.relevant = adapter.belongsToRepository(meta, this.config.repoRoot, this.gitCache);
+        session.relevant = relevant;
       }
-      if (!this.state.initializedProviders.includes(adapter.id)) this.state.initializedProviders.push(adapter.id);
+      if (!this.state.initializedProviders.includes(adapter.id)) {
+        this.state.initializedProviders.push(adapter.id);
+        this.markDirty();
+      }
     }
   }
 
@@ -150,12 +205,14 @@ export class CodexObserver {
       };
       session.turns[turnId] = turn;
       provisionalWork(turn, session.meta, sessionAdapter(session.provider || "codex"));
+      this.markDirty();
       return;
     }
     const turn = this.currentTurn(session, signal.turnId);
     if (!turn) return;
     if (signal.kind === "context") {
       turn.model = signal.model; turn.effort = signal.effort;
+      this.markDirty();
       return;
     }
     const previous = turn.events.at(-1);
@@ -177,6 +234,7 @@ export class CodexObserver {
       turn.finalPending = true;
     }
     if (signal.kind === "tool" && signal.name === "update_plan") turn.priorityPending = true;
+    this.markDirty();
   }
 
   async infer(turn, final = false) {
@@ -203,8 +261,9 @@ export class CodexObserver {
         turn.events = [];
         turn.priorityPending = false;
         turn.finalPending = false;
+        this.markDirty();
       } catch (error) {
-        activityError(`Observer could not classify ${turn.workId}: ${error.message}`);
+        this.reportError(`Observer could not classify ${turn.workId}: ${error.message}`, `classify:${turn.workId}:${error.message}`);
         if (final) {
           appendEvent(createEvent("work.upsert", {
             actor: "observer",
@@ -215,6 +274,7 @@ export class CodexObserver {
             },
           }));
           turn.finalPending = false;
+          this.markDirty();
         }
       }
     })();
@@ -238,24 +298,32 @@ export class CodexObserver {
   }
 
   async tick() {
-    this.discover();
+    if (this.now() - this.lastDiscoveryAt >= this.discoveryIntervalMs) {
+      this.discover();
+      this.lastDiscoveryAt = this.now();
+    }
     for (const [file, session] of Object.entries(this.state.sessions)) {
       if (!session.relevant || !fs.existsSync(file)) continue;
       const adapter = sessionAdapter(session.provider || "codex");
       const delta = readAppendedRecords(file, session.offset, {
         discardingOversizedRecord: Boolean(session.discardingOversizedRecord),
       });
+      if (session.offset !== delta.offset || Boolean(session.discardingOversizedRecord) !== Boolean(delta.discardingOversizedRecord)) this.markDirty();
       session.offset = delta.offset;
       session.discardingOversizedRecord = delta.discardingOversizedRecord;
       if (delta.skippedOversizedRecords) {
         session.skippedOversizedRecords = (session.skippedOversizedRecords || 0) + delta.skippedOversizedRecords;
-        activityError(`Observer skipped ${delta.skippedOversizedRecords} oversized journal record(s) for ${session.meta.id || "unknown session"}`);
+        this.markDirty();
+        this.reportError(`Observer skipped ${delta.skippedOversizedRecords} oversized journal record(s) for ${session.meta.id || "unknown session"}`, `oversized:${file}`);
       }
       for (const record of delta.records) for (const signal of adapter.signals(record)) this.handleSignal(session, signal);
     }
     await this.runDue();
-    this.state.updatedAt = new Date(this.now()).toISOString();
-    writeObserverState(this.state);
+    if (this.dirty) {
+      this.state.updatedAt = new Date(this.now()).toISOString();
+      this.writeState(this.state);
+      this.dirty = false;
+    }
     return this.summary();
   }
 
@@ -289,14 +357,14 @@ export function startObserver(options = {}) {
     timer = setTimeout(async () => {
       if (!ticking) {
         ticking = true;
-        try { await observer.tick(); } catch (error) { activityError(`Observer tick failed: ${error.message}`); }
+        try { await observer.tick(); } catch (error) { observer.reportError(`Observer tick failed: ${error.message}`, `tick:${error.code || error.message}`); }
         finally { ticking = false; }
       }
       schedule();
     }, observer.config.pollMs);
     timer.unref?.();
   };
-  observer.tick().catch((error) => activityError(`Observer start failed: ${error.message}`)).finally(schedule);
+  observer.tick().catch((error) => observer.reportError(`Observer start failed: ${error.message}`, `start:${error.code || error.message}`)).finally(schedule);
   return {
     observer,
     stop: async () => {

@@ -226,16 +226,17 @@ if (args.root === true) {
           order: optionalNumber(args.order),
         });
       } else if (command === "entity") {
+        const kind = args.kind || "module";
         emit("entity.upsert", args.actor || "unknown", {
           id: required(args, "id"),
-          areaId: required(args, "area"),
+          areaId: kind === "person" ? "" : required(args, "area"),
           label: required(args, "label"),
           status: args.status || "operational",
-          path: args.path || "",
+          path: kind === "person" ? "" : (args.path || ""),
           purpose: args.purpose || "",
           note: args.note || "",
-          parentId: args.parent,
-          kind: args.kind || "module",
+          parentId: kind === "person" ? "" : args.parent,
+          kind,
           evidence: list(args.evidence),
           inputs: list(args.inputs), outputs: list(args.outputs), dependsOn: list(args.depends),
           x: optionalNumber(args.x), y: optionalNumber(args.y), order: optionalNumber(args.order),
