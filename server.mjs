@@ -46,7 +46,7 @@ function architectProgress(progress = {}) {
     heartbeatAt: progress.at || new Date().toISOString(),
     attempt: Number.isInteger(progress.attempt) ? progress.attempt : architectState.attempt,
     activityCount: architectState.activityCount + 1,
-    detail: progress.detail || null,
+    detail: Object.hasOwn(progress, "detail") ? progress.detail : architectState.detail,
   };
 }
 
@@ -66,7 +66,7 @@ function startArchitectRefresh(viewpoint = "") {
       const finishedAt = new Date().toISOString();
       architectState = {
         ...architectState, status: "failed", phase: "failed", heartbeatAt: finishedAt, finishedAt,
-        result: null, error: String(error?.message || error).slice(0, 500), detail: null,
+        result: error?.audit || null, error: String(error?.message || error).slice(0, 500), detail: architectState.detail,
       };
     })
     .finally(() => { architectJob = null; });

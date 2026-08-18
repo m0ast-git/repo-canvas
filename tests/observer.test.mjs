@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -251,7 +252,7 @@ test("architect rejects hierarchy cycles and cross-domain parents", () => {
   assert.throws(() => semantic.validateArchitecture({ ...base, entities: [entity("parent-a", "a", ""), entity("child-b", "b", "parent-a")] }), /another area/);
 });
 
-test("architect repairs invalid cross-references without repeating repository inspection", async () => {
+test("architect repairs invalid cross-references inside the same Sol session", async () => {
   const base = {
     projectTitle: "Repair fixture", projectSummary: "Checks a semantic flow", layoutIntent: "flow", layoutDirection: "RIGHT",
     keyFlows: [{ id: "primary-flow", title: "Primary flow", trigger: "request arrives", outcome: "result leaves", steps: ["repair-entry", "invented-action", "repair-output"] }],
@@ -268,11 +269,13 @@ test("architect repairs invalid cross-references without repeating repository in
   repaired.keyFlows[0].steps = ["repair-entry", "repair-output"];
   let calls = 0;
   let repairOptions = null;
+  const sessionsSeen = [];
   const phases = [];
   const runner = async (options) => {
     calls += 1;
+    sessionsSeen.push(options.session);
     if (calls === 2) repairOptions = options;
-    return { value: calls === 1 ? base : repaired, profile: { model: "fake-sol", effort: "medium" }, threadId: `repair-thread-${calls}` };
+    return { value: calls === 1 ? base : repaired, profile: { model: "fake-sol", effort: "medium" }, threadId: "repair-thread", resumed: calls > 1, usage: { input_tokens: 100, cached_input_tokens: calls > 1 ? 80 : 0, output_tokens: 20 } };
   };
   const result = await architect.runArchitect({
     root, refresh: false, runner,
@@ -283,7 +286,14 @@ test("architect repairs invalid cross-references without repeating repository in
   assert.equal(result.repairs, 1);
   assert.equal(result.semanticReviews, 1);
   assert.deepEqual(result.reviewThreadIds, ["review-thread"]);
-  assert.deepEqual(result.threadIds, ["repair-thread-1", "repair-thread-2"]);
+  assert.deepEqual(result.threadIds, ["repair-thread"]);
+  assert.equal(sessionsSeen[0], sessionsSeen[1]);
+  assert.equal(result.usage.inputTokens, 200);
+  assert.equal(result.usage.cachedInputTokens, 80);
+  assert.equal(result.usage.outputTokens, 40);
+  const auditRecords = fs.readFileSync(result.auditFile, "utf8").trim().split(/\r?\n/).map(JSON.parse).filter((item) => item.runId === result.auditRunId);
+  assert.equal(auditRecords.filter((item) => item.type === "model.completed").length, 3);
+  assert.equal(auditRecords.at(-1).type, "run.completed");
   assert.match(repairOptions.prompt, /Do not inspect files, run tools/);
   assert.deepEqual(repairOptions.outputSchema.properties.keyFlows.items.properties.steps.items.enum.includes("invented-action"), false);
   assert.deepEqual(repairOptions.outputSchema.properties.areas.items.properties.id.enum, ["repair-area"]);
@@ -319,7 +329,7 @@ test("architect keeps people outside areas and requires a meaningful relation", 
   assert.equal(work.payload.provisional, true);
 });
 
-test("blind review can trigger one full semantic regeneration before apply", async () => {
+test("blind review sends focused feedback back into the same Sol session", async () => {
   const initial = {
     projectTitle: "Fixture", projectSummary: "Technical subsystems", layoutIntent: "domain", layoutDirection: "AUTO", keyFlows: [], unresolvedQuestions: [],
     areas: [{ id: "misc", title: "User product", note: "Mixed things", color: "#ef9a72", evidence: [], order: 1 }],
@@ -333,19 +343,67 @@ test("blind review can trigger one full semantic regeneration before apply", asy
   regenerated.entities[0].purpose = "Turns an accepted request into the returned fixture result";
   let architectCalls = 0;
   let reviewCalls = 0;
+  const sessionsSeen = [];
   const result = await architect.runArchitect({
     root, refresh: false,
-    runner: async () => ({ value: architectCalls++ === 0 ? initial : regenerated, profile: { model: "fake-sol", effort: "medium" }, threadId: `architect-${architectCalls}` }),
+    runner: async (options) => { sessionsSeen.push(options.session); return { value: architectCalls++ === 0 ? initial : regenerated, profile: { model: "fake-sol", effort: "medium" }, threadId: "architect-session", resumed: architectCalls > 1 }; },
     reviewer: async () => ({
       value: reviewCalls++ === 0
-        ? approvedReview({ passed: false, summary: "The project purpose is unclear", answers: { project: "Unknown", composition: "Mixed", lifecycle: "Unknown" }, issues: [{ severity: "critical", scope: "map", id: "summary", message: "No end-to-end purpose", recommendation: "Explain input and result" }] })
+        ? approvedReview({ passed: false, summary: "The project purpose is unclear", answers: { project: "Unknown", composition: "Mixed", lifecycle: "Unknown" }, issues: [{ severity: "critical", scope: "map", id: "map", message: "No end-to-end purpose", recommendation: "Explain input and result" }] })
         : approvedReview(),
       threadId: `review-${reviewCalls}`,
     }),
   });
-  assert.equal(result.semanticRegenerations, 1);
+  assert.equal(result.semanticRegenerations, 0);
+  assert.equal(result.acceptanceRepairs, 1);
   assert.equal(result.semanticReviews, 2);
+  assert.equal(sessionsSeen[0], sessionsSeen[1]);
+  assert.deepEqual(result.threadIds, ["architect-session"]);
   assert.equal(store.getSnapshot().map.projectSummary, regenerated.projectSummary);
+});
+
+test("failed acceptance preserves every reviewer verdict and token total", async () => {
+  const candidate = {
+    projectTitle: "Fixture", projectSummary: "Accepts a request and returns a result.", layoutIntent: "domain", layoutDirection: "AUTO", keyFlows: [], unresolvedQuestions: [],
+    areas: [{ id: "api-area", title: "Request handling", note: "Owns request operations", color: "#ef9a72", evidence: [], order: 1 }],
+    entities: [{ id: "request-api", areaId: "api-area", parentId: "", label: "Request API", kind: "interface", status: "operational", path: "", purpose: "Handles everything", note: "", evidence: [], order: 1 }],
+    relations: [], removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
+  };
+  const rejection = approvedReview({ passed: false, summary: "Request API is too broad", issues: [{ severity: "critical", scope: "entity", id: "request-api", message: "Too many responsibilities", recommendation: "Split request intake and export" }] });
+  let caught;
+  try {
+    await architect.runArchitect({
+      root, refresh: false, maxReviewRepairs: 1,
+      runner: async () => ({ value: structuredClone(candidate), profile: { model: "fake-sol", effort: "medium" }, threadId: "persistent-sol", usage: { input_tokens: 100, output_tokens: 10 } }),
+      reviewer: async () => ({ value: structuredClone(rejection), profile: { model: "fake-luna", effort: "low" }, threadId: crypto.randomUUID(), usage: { input_tokens: 20, output_tokens: 5 } }),
+    });
+  } catch (error) { caught = error; }
+  assert.match(caught?.message || "", /2 review\(s\)/);
+  assert.equal(caught.audit.usage.inputTokens, 240);
+  assert.equal(caught.audit.usage.outputTokens, 30);
+  const records = fs.readFileSync(caught.audit.auditFile, "utf8").trim().split(/\r?\n/).map(JSON.parse).filter((item) => item.runId === caught.audit.runId);
+  assert.equal(records.filter((item) => item.type === "review.completed").length, 2);
+  assert.equal(records.filter((item) => item.type === "review.completed")[0].issues[0].id, "request-api");
+  assert.equal(records.at(-1).type, "run.failed");
+});
+
+test("focused review repair cannot rewrite an unrelated area", () => {
+  const before = {
+    projectTitle: "Fixture", projectSummary: "Fixture map", layoutIntent: "domain", layoutDirection: "AUTO", unresolvedQuestions: [], keyFlows: [],
+    areas: [{ id: "api-area", title: "API", note: "Requests" }, { id: "billing-area", title: "Billing", note: "Money" }],
+    entities: [{ id: "request-api", areaId: "api-area", label: "Request API" }, { id: "billing", areaId: "billing-area", label: "Billing" }],
+    relations: [], removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
+  };
+  const review = approvedReview({ passed: false, issues: [{ severity: "critical", scope: "entity", id: "request-api", message: "Too broad", recommendation: "Split responsibilities" }] });
+  const focused = structuredClone(before);
+  focused.entities[0].label = "Request lifecycle API";
+  focused.entities.push({ id: "request-export", areaId: "api-area", label: "Request export" });
+  assert.doesNotThrow(() => architect.assertReviewRepairScope(before, focused, review));
+  const unrelated = structuredClone(focused);
+  unrelated.entities.find((item) => item.id === "billing").label = "Changed billing";
+  assert.throws(() => architect.assertReviewRepairScope(before, unrelated, review), /unrelated entity 'billing'/);
+  assert.ok(architect.architectureReviewSchema(before).properties.issues.items.properties.id.enum.includes("request-api"));
+  assert.throws(() => architect.validateReviewerDecision(before, { ...review, issues: [{ ...review.issues[0], scope: "area" }] }), /does not match scope/);
 });
 
 test("observer state stays compact and atomic replacement retries transient Windows locks", () => {

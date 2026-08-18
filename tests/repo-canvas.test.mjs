@@ -11,7 +11,7 @@ import { routeEdges as routeLibavoidEdges } from "@mr_mint/elkjs-libavoid";
 
 import { patchSnapshotPositions } from "../client/src/canvas-snapshot.js";
 import { layoutFingerprint } from "../client/src/layout-fingerprint.js";
-import { codexCommandArguments, codexProcessOptions, codexTarget, createIsolatedCodexHome } from "../repo-canvas/scripts/model-runtime.mjs";
+import { MODEL_PROFILES, codexCommandArguments, codexProcessOptions, codexResumeCommandArguments, codexTarget, createIsolatedCodexHome } from "../repo-canvas/scripts/model-runtime.mjs";
 import { resolveSessionTarget } from "../repo-canvas/scripts/session-locator.mjs";
 import { reduceEvents } from "../repo-canvas/scripts/canvas-store.mjs";
 import { validateEvent } from "../repo-canvas/scripts/canvas-schema.mjs";
@@ -31,6 +31,13 @@ test("Codex runtime resolves Windows, macOS, and Linux without a shell wrapper",
   assert.ok(args.includes("mcp_servers={}"));
   assert.ok(args.includes("project_doc_max_bytes=0"));
   for (const feature of ["apps", "browser_use", "computer_use", "hooks", "memories", "multi_agent", "plugins", "skill_search"]) assert.ok(args.includes(feature));
+  const resumed = codexResumeCommandArguments({ threadId: "019f-session", profile: { model: "test-model", effort: "medium" }, schemaPath: "/schema.json" });
+  assert.deepEqual(resumed.slice(0, 3), ["exec", "resume", "--json"]);
+  assert.equal(resumed.at(-2), "019f-session");
+  assert.equal(resumed.at(-1), "-");
+  assert.ok(resumed.includes("/schema.json"));
+  assert.equal(MODEL_PROFILES.observer.model, process.env.REPO_CANVAS_OBSERVER_MODEL || "gpt-5.6-luna");
+  assert.equal(MODEL_PROFILES.reviewer.model, process.env.REPO_CANVAS_REVIEWER_MODEL || "gpt-5.6-luna");
   assert.deepEqual(codexProcessOptions({ SAFE: "1" }), { env: { SAFE: "1" }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 });
 

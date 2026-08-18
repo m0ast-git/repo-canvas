@@ -1,6 +1,6 @@
 {
   "name": "repo-canvas",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "description": "A local semantic repository map with live Codex, Claude Code and Kimi Code work",
   "type": "module",
   "license": "MIT",

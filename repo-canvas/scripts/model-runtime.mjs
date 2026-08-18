@@ -12,11 +12,11 @@ export const MODEL_PROFILES = Object.freeze({
     effort: process.env.REPO_CANVAS_ARCHITECT_EFFORT || "medium",
   }),
   observer: Object.freeze({
-    model: process.env.REPO_CANVAS_OBSERVER_MODEL || "gpt-5.4-mini",
+    model: process.env.REPO_CANVAS_OBSERVER_MODEL || "gpt-5.6-luna",
     effort: process.env.REPO_CANVAS_OBSERVER_EFFORT || "low",
   }),
   reviewer: Object.freeze({
-    model: process.env.REPO_CANVAS_REVIEWER_MODEL || "gpt-5.4-mini",
+    model: process.env.REPO_CANVAS_REVIEWER_MODEL || "gpt-5.6-luna",
     effort: process.env.REPO_CANVAS_REVIEWER_EFFORT || "low",
   }),
 });
@@ -114,6 +114,21 @@ export function codexCommandArguments({ cwd, profile, schemaPath }) {
   ];
 }
 
+export function codexResumeCommandArguments({ threadId, profile, schemaPath }) {
+  if (!threadId) throw new Error("A Codex thread id is required to resume a structured session");
+  return [
+    "exec", "resume", "--json", "--model", profile.model,
+    "--skip-git-repo-check", "--output-schema", schemaPath,
+    "--config", `model_reasoning_effort=${JSON.stringify(profile.effort)}`,
+    "--config", "web_search=\"disabled\"", "--config", "approval_policy=\"never\"",
+    "--config", "mcp_servers={}", "--config", "project_doc_max_bytes=0",
+    "--disable", "apps", "--disable", "browser_use", "--disable", "computer_use",
+    "--disable", "hooks", "--disable", "memories", "--disable", "multi_agent",
+    "--disable", "plugins", "--disable", "skill_search",
+    threadId, "-",
+  ];
+}
+
 export function codexProcessOptions(env = isolatedCodexEnvironment()) {
   return { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true };
 }
@@ -133,6 +148,30 @@ function report(onProgress, payload) {
   try { onProgress?.({ ...payload, at: new Date().toISOString() }); } catch { /* progress must not break the model call */ }
 }
 
+export async function createCodexStructuredSession({
+  cwd,
+  profile = MODEL_PROFILES.architect,
+  executable = resolveCodexExecutable(),
+} = {}) {
+  if (!cwd) throw new Error("A working directory is required for a persistent Codex session");
+  const home = await createIsolatedCodexHome();
+  let closed = false;
+  return {
+    cwd,
+    profile,
+    executable,
+    codexHome: home.directory,
+    threadId: null,
+    turns: 0,
+    get closed() { return closed; },
+    async close() {
+      if (closed) return;
+      closed = true;
+      await home.cleanup();
+    },
+  };
+}
+
 export async function runCodexStructured({
   role,
   cwd,
@@ -142,19 +181,27 @@ export async function runCodexStructured({
   profile = MODEL_PROFILES[role],
   onProgress,
   executable = resolveCodexExecutable(),
+  session = null,
 }) {
   if (!profile) throw new Error(`Unknown model role '${role}'`);
+  if (session?.closed) throw new Error("Codex structured session is already closed");
+  if (session && path.resolve(session.cwd) !== path.resolve(cwd)) throw new Error("Codex structured session cannot change its working directory");
+  if (session && session.profile.model !== profile.model) throw new Error("Codex structured session cannot change its model");
   const { controller, clear } = timeoutSignal(timeoutMs);
   const schema = await outputSchemaFile(outputSchema);
   let codexHome = null;
   let child = null;
   let lines = null;
   try {
-    codexHome = await createIsolatedCodexHome();
-    child = spawn(executable, codexCommandArguments({ cwd, profile, schemaPath: schema.schemaPath }), {
+    codexHome = session ? { directory: session.codexHome, cleanup: async () => {} } : await createIsolatedCodexHome();
+    const resuming = Boolean(session?.threadId);
+    const command = resuming
+      ? codexResumeCommandArguments({ threadId: session.threadId, profile, schemaPath: schema.schemaPath })
+      : codexCommandArguments({ cwd, profile, schemaPath: schema.schemaPath });
+    child = spawn(session?.executable || executable, command, {
       ...codexProcessOptions(isolatedCodexEnvironment(codexHome.directory)), signal: controller.signal,
     });
-    report(onProgress, { phase: "starting", eventType: "process.started", pid: child.pid || null });
+    report(onProgress, { phase: "starting", eventType: "process.started", pid: child.pid || null, resumed: resuming });
     const stderr = [];
     let stderrBytes = 0;
     child.stderr?.on("data", (chunk) => {
@@ -191,8 +238,13 @@ export async function runCodexStructured({
       const detail = outcome.signal ? `signal ${outcome.signal}` : `code ${outcome.code ?? 1}`;
       throw new Error(`Codex Exec exited with ${detail}: ${Buffer.concat(stderr).toString("utf8").trim()}`);
     }
+    if (session) {
+      if (!session.threadId && threadId) session.threadId = threadId;
+      if (!session.threadId) throw new Error("Codex did not return a thread id for the persistent Architect session");
+      session.turns += 1;
+    }
     report(onProgress, { phase: "validating", eventType: "process.completed" });
-    return { value: parseStructuredResponse(finalResponse), threadId, profile, usage };
+    return { value: parseStructuredResponse(finalResponse), threadId: session?.threadId || threadId, profile, usage, resumed: resuming };
   } catch (error) {
     if (controller.signal.aborted) throw new Error(`${role} model timed out after ${timeoutMs} ms`);
     throw error;
@@ -200,7 +252,7 @@ export async function runCodexStructured({
     clear(); lines?.close();
     try { if (child && !child.killed) child.kill(); } catch { /* process already ended */ }
     await schema.cleanup();
-    await codexHome?.cleanup();
+    if (!session) await codexHome?.cleanup();
   }
 }
 

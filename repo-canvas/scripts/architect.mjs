@@ -1,10 +1,11 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { getSnapshot } from "./canvas-store.mjs";
-import { projectRoot } from "./project-root.mjs";
-import { runCodexStructured } from "./model-runtime.mjs";
+import { projectRoot, resolveDataDirectory } from "./project-root.mjs";
+import { MODEL_PROFILES, createCodexStructuredSession, runCodexStructured } from "./model-runtime.mjs";
 import { ARCHITECT_OUTPUT_SCHEMA, ARCHITECT_REVIEW_SCHEMA, applyArchitecture, validateArchitecture } from "./semantic-model.mjs";
 
 function compactCurrentMap(snapshot) {
@@ -20,7 +21,7 @@ export function architectPrompt({ snapshot, refresh, viewpoint = "", language = 
   const current = refresh ? JSON.stringify(compactCurrentMap(snapshot)) : "No prior semantic map exists.";
   return `You are Repo Canvas Architect. Build an evidence-backed, human-readable project map of the repository in your current working directory.
 
-This is a one-time read-only architecture pass. Use medium-depth analysis. Do not modify files and do not call Repo Canvas commands.
+This is the first turn of one persistent read-only Architect session. Use medium-depth analysis. Inspect the repository once now; after you return the candidate, an independent reviewer may send focused follow-up feedback into this same session. Reuse the evidence and context already collected for those follow-ups instead of rereading the repository. Do not modify files and do not call Repo Canvas commands.
 
 Your job is to give the repository owner a reliable mental model of the project: what it does, which responsibility-bearing parts it owns, what state those parts are in and how they collaborate. Those same parts must be useful targets for live agent work. Choose the composition that best fits the evidence: a flow, hierarchy, core with extensions, domain/context landscape, clustered system or justified hybrid. A key flow tests coverage; it never dictates the canvas shape. The owner may supply a preferred viewpoint below; follow it when it is compatible with repository evidence.
 
@@ -208,6 +209,27 @@ function compactReviewMap(value) {
   };
 }
 
+export function architectureReviewSchema(value) {
+  const schema = structuredClone(ARCHITECT_REVIEW_SCHEMA);
+  schema.properties.issues.items.properties.id = {
+    ...schema.properties.issues.items.properties.id,
+    enum: [...new Set(["map", ...value.areas.map((item) => item.id), ...value.entities.map((item) => item.id), ...value.relations.map((item) => item.id), ...(value.keyFlows || []).map((item) => item.id)])],
+  };
+  return schema;
+}
+
+export function validateReviewerDecision(value, review) {
+  const ids = {
+    map: new Set(["map"]), area: new Set(value.areas.map((item) => item.id)), entity: new Set(value.entities.map((item) => item.id)),
+    relation: new Set(value.relations.map((item) => item.id)), flow: new Set((value.keyFlows || []).map((item) => item.id)),
+  };
+  for (const issue of review.issues || []) if (!ids[issue.scope]?.has(issue.id)) throw new Error(`Reviewer issue '${issue.id}' does not match scope '${issue.scope}'`);
+  const critical = (review.issues || []).filter((issue) => issue.severity === "critical");
+  if (review.passed && critical.length) throw new Error("Reviewer marked the map passed while reporting critical issues");
+  if (!review.passed && !critical.length) throw new Error("Reviewer rejected the map without a critical issue");
+  return review;
+}
+
 export function architectReviewPrompt(value, language) {
   return `You are the independent owner-readability reviewer for Repo Canvas. You receive only the proposed map, with no repository access or hidden implementation context. Judge whether an intelligent project owner can understand the system from the map alone.
 
@@ -222,22 +244,45 @@ Pass only when all critical conditions hold:
 - relation labels explain directed actions and keyFlows make important work traceable without forcing the map into a pipeline;
 - operational, disabled and planned concepts are understandable and not blended deceptively.
 
-Answer the three comprehension questions yourself, then report specific issues by id. Set passed=false whenever at least one critical issue exists. Return structured output only.
+Answer the three comprehension questions yourself, then report specific issues. For every issue, scope must name the object type and id must be the exact existing map id of that area, entity, relation or flow; use id="map" only for a project-wide thesis problem. Set passed=false whenever at least one critical issue exists. Return structured output only.
 
 Proposed map:
 ${JSON.stringify(compactReviewMap(value))}`;
 }
 
-export function architectRegenerationPrompt({ snapshot, refresh, viewpoint, language, value, review }) {
-  return `${architectPrompt({ snapshot, refresh, viewpoint, language })}
+export function architectRefinementPrompt({ value, review, scopeError = "" }) {
+  return `Continue the same Repo Canvas Architect session. An independent Luna reviewer has inspected your candidate without repository access.
 
-An independent reader saw only the previous map and could not understand it. Rebuild the complete candidate, using the repository as evidence and preserving stable ids only where the underlying concept remains the same. You may merge, split, remove, rename, reparent or replace areas/entities/relations. Address every critical issue instead of polishing its wording.
+Refine only the concrete fragments named by the review and the minimum adjacent relations/keyFlows needed to keep them coherent. Reuse the repository evidence already collected in this session. Do not inspect files, run tools, reread the repository or rebuild unrelated areas. You may split, merge, rename, add or remove entities inside an affected area when that is necessary to make one responsibility clear. Preserve every unaffected area, entity, relation, flow, id, color and wording exactly.
 
+${scopeError ? `Your previous refinement exceeded that scope and was rejected before review:\n${scopeError}\n` : ""}
 Independent review:
 ${JSON.stringify(review)}
 
-Rejected candidate:
-${JSON.stringify(value)}`;
+Current candidate:
+${JSON.stringify(value)}
+
+Return the complete corrected structured map only.`;
+}
+
+function normalizeUsage(usage = {}) {
+  const number = (...keys) => keys.map((key) => Number(usage?.[key])).find(Number.isFinite) || 0;
+  const inputTokens = number("input_tokens", "inputTokens");
+  const cachedInputTokens = number("cached_input_tokens", "cachedInputTokens");
+  const outputTokens = number("output_tokens", "outputTokens");
+  return { inputTokens, cachedInputTokens, outputTokens, totalTokens: number("total_tokens", "totalTokens") || inputTokens + outputTokens };
+}
+
+function addUsage(total, usage) {
+  for (const key of Object.keys(total)) total[key] += usage[key] || 0;
+}
+
+function createArchitectAudit(root) {
+  const runId = crypto.randomUUID();
+  const file = path.join(resolveDataDirectory(root), "architect-runs.jsonl");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const append = (type, payload = {}) => fs.appendFileSync(file, `${JSON.stringify({ v: 1, runId, ts: new Date().toISOString(), type, ...payload })}\n`, { encoding: "utf8", mode: 0o600 });
+  return { runId, file, append };
 }
 
 function retainedIds(snapshot, value) {
@@ -311,16 +356,67 @@ function assertRepairScope(before, after) {
   }
 }
 
-async function runBlindReview({ value, language, reviewer, onProgress }) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-review-"));
-  try {
-    onProgress?.({ phase: "reviewing", at: new Date().toISOString() });
-    return await reviewer({
-      role: "reviewer", cwd: directory, prompt: architectReviewPrompt(value, language),
-      outputSchema: ARCHITECT_REVIEW_SCHEMA, timeoutMs: 3 * 60_000,
-      onProgress: (progress) => onProgress?.({ ...progress, phase: "reviewing" }),
-    });
-  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function itemMap(items = []) {
+  return new Map(items.map((item) => [item.id, item]));
+}
+
+export function assertReviewRepairScope(before, after, review) {
+  const issues = (review.issues || []).filter((issue) => issue.severity === "critical");
+  if (issues.some((issue) => issue.scope === "map")) return;
+  const beforeAreas = itemMap(before.areas); const afterAreas = itemMap(after.areas);
+  const beforeEntities = itemMap(before.entities); const afterEntities = itemMap(after.entities);
+  const beforeRelations = itemMap(before.relations); const afterRelations = itemMap(after.relations);
+  const beforeFlows = itemMap(before.keyFlows); const afterFlows = itemMap(after.keyFlows);
+  const allowedAreas = new Set(); const directlyTargetedEntities = new Set(); const targetedRelations = new Set(); const targetedFlows = new Set();
+  const addEntityArea = (id) => {
+    const entity = beforeEntities.get(id) || afterEntities.get(id);
+    if (entity) directlyTargetedEntities.add(id);
+    if (entity?.areaId) allowedAreas.add(entity.areaId);
+  };
+  for (const issue of issues) {
+    if (issue.scope === "area") allowedAreas.add(issue.id);
+    if (issue.scope === "entity") addEntityArea(issue.id);
+    if (issue.scope === "relation") {
+      targetedRelations.add(issue.id);
+      const relation = beforeRelations.get(issue.id) || afterRelations.get(issue.id);
+      if (relation) { addEntityArea(relation.from); addEntityArea(relation.to); }
+    }
+    if (issue.scope === "flow") {
+      targetedFlows.add(issue.id);
+      const flow = beforeFlows.get(issue.id) || afterFlows.get(issue.id);
+      for (const step of flow?.steps || []) addEntityArea(step);
+    }
+  }
+  const allowedEntities = new Set([...directlyTargetedEntities, ...[...before.entities, ...after.entities].filter((item) => allowedAreas.has(item.areaId)).map((item) => item.id)]);
+  const unchanged = (label, beforeMap, afterMap, allowed) => {
+    for (const id of new Set([...beforeMap.keys(), ...afterMap.keys()])) {
+      if (allowed(id)) continue;
+      if (!sameJson(beforeMap.get(id), afterMap.get(id))) throw new Error(`Focused refinement changed unrelated ${label} '${id}'`);
+    }
+  };
+  unchanged("area", beforeAreas, afterAreas, (id) => allowedAreas.has(id));
+  unchanged("entity", beforeEntities, afterEntities, (id) => allowedEntities.has(id));
+  unchanged("relation", beforeRelations, afterRelations, (id) => {
+    const relation = beforeRelations.get(id) || afterRelations.get(id);
+    return targetedRelations.has(id) || allowedEntities.has(relation?.from) || allowedEntities.has(relation?.to);
+  });
+  unchanged("flow", beforeFlows, afterFlows, (id) => {
+    const flow = beforeFlows.get(id) || afterFlows.get(id);
+    return targetedFlows.has(id) || (flow?.steps || []).some((step) => allowedEntities.has(step));
+  });
+  unchanged("removed area", new Map((before.removedAreaIds || []).map((id) => [id, id])), new Map((after.removedAreaIds || []).map((id) => [id, id])), (id) => allowedAreas.has(id));
+  unchanged("removed entity", new Map((before.removedEntityIds || []).map((id) => [id, id])), new Map((after.removedEntityIds || []).map((id) => [id, id])), (id) => allowedEntities.has(id));
+  unchanged("removed relation", new Map((before.removedRelationIds || []).map((id) => [id, id])), new Map((after.removedRelationIds || []).map((id) => [id, id])), (id) => {
+    const relation = beforeRelations.get(id) || afterRelations.get(id);
+    return targetedRelations.has(id) || allowedEntities.has(relation?.from) || allowedEntities.has(relation?.to);
+  });
+  for (const field of ["projectTitle", "projectSummary", "layoutIntent", "layoutDirection", "unresolvedQuestions"]) {
+    if (!sameJson(before[field], after[field])) throw new Error(`Focused refinement changed unrelated map field '${field}'`);
+  }
 }
 
 export async function runArchitect({
@@ -332,103 +428,148 @@ export async function runArchitect({
   runner = runCodexStructured,
   reviewer = runCodexStructured,
   onProgress,
-  maxRepairs = 2,
-  maxSemanticRegenerations = 1,
+  maxRepairs = 3,
+  maxReviewRepairs = 3,
+  sessionFactory = null,
 } = {}) {
+  const audit = createArchitectAudit(root);
   const snapshot = getSnapshot();
   const language = preferredMapLanguage(viewpoint, snapshot, repositoryLanguageSample(root));
-  const profile = model || effort ? {
-    model: model || process.env.REPO_CANVAS_ARCHITECT_MODEL || "gpt-5.6-sol",
-    effort: effort || process.env.REPO_CANVAS_ARCHITECT_EFFORT || "medium",
-  } : undefined;
-  const result = await runner({
-    role: "architect",
-    cwd: root,
-    prompt: architectPrompt({ snapshot, refresh, viewpoint, language }),
-    outputSchema: ARCHITECT_OUTPUT_SCHEMA,
-    onProgress: (progress) => onProgress?.({ ...progress, attempt: 0 }),
-    ...(profile ? { profile } : {}),
-  });
-  let generation = result;
-  let value = result.value;
+  const profile = {
+    model: model || MODEL_PROFILES.architect.model,
+    effort: effort || MODEL_PROFILES.architect.effort,
+  };
+  const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  const calls = [];
+  let solSession = null;
+  let result = null;
+  let value = null;
   let repairs = 0;
-  let semanticRegenerations = 0;
+  let acceptanceRepairs = 0;
   let semanticReviews = 0;
   let reviewWarnings = 0;
-  const threadIds = [result.threadId].filter(Boolean);
+  const threadIds = [];
   const reviewThreadIds = [];
-  while (true) {
-    let pendingError = null;
-    let generationRepairs = 0;
-    while (true) {
-      let error = pendingError; pendingError = null;
-      if (!error) {
-        try {
-          onProgress?.({ phase: "validating", attempt: repairs, at: new Date().toISOString() });
-          validateArchitecture(value, snapshot);
-          validateArchitectureLanguage(value, language);
-          validateArchitectureEvidence(value, root);
-          break;
-        } catch (caught) { error = caught; }
-      }
-      if (generationRepairs >= maxRepairs) throw new Error(`Architect could not produce a valid map after ${generationRepairs} repair attempts: ${error.message}`);
-      generationRepairs += 1;
-      repairs += 1;
-      onProgress?.({ phase: "repairing", attempt: repairs, detail: error.message, at: new Date().toISOString() });
-      const repaired = await runner({
-        role: "architect",
-        cwd: root,
-        prompt: architectRepairPrompt({ value, snapshot, error, language }),
-        outputSchema: architectureRepairSchema(value, snapshot),
-        timeoutMs: 8 * 60_000,
-        profile: generation.profile || result.profile || profile,
-        onProgress: (progress) => onProgress?.({ ...progress, phase: progress.phase === "starting" ? "repairing" : progress.phase, attempt: repairs }),
-      });
-      try { assertRepairScope(value, repaired.value); value = repaired.value; }
-      catch (scopeError) { pendingError = scopeError; }
-      if (repaired.threadId) threadIds.push(repaired.threadId);
+  const summary = () => ({ runId: audit.runId, auditFile: audit.file, calls: calls.length, usage: { ...usage }, repairs, acceptanceRepairs, semanticReviews });
+  const callModel = async (callRunner, phase, options) => {
+    const index = calls.length + 1; const startedAt = new Date().toISOString(); const started = Date.now();
+    try {
+      const response = await callRunner(options);
+      const callUsage = normalizeUsage(response.usage);
+      addUsage(usage, callUsage);
+      const record = {
+        index, phase, role: options.role, model: response.profile?.model || options.profile?.model || MODEL_PROFILES[options.role]?.model,
+        effort: response.profile?.effort || options.profile?.effort || MODEL_PROFILES[options.role]?.effort,
+        threadId: response.threadId || null, resumed: response.resumed === true,
+        startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - started, usage: callUsage,
+      };
+      calls.push(record); audit.append("model.completed", record);
+      return response;
+    } catch (error) {
+      const record = { index, phase, role: options.role, model: options.profile?.model || MODEL_PROFILES[options.role]?.model, startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - started, error: String(error?.message || error).slice(0, 1000) };
+      calls.push(record); audit.append("model.failed", record); throw error;
     }
-
-    const reviewed = await runBlindReview({ value, language, reviewer, onProgress });
-    semanticReviews += 1;
-    if (reviewed.threadId) reviewThreadIds.push(reviewed.threadId);
-    const critical = (reviewed.value.issues || []).filter((issue) => issue.severity === "critical");
-    reviewWarnings = (reviewed.value.issues || []).filter((issue) => issue.severity === "warning").length;
-    if (reviewed.value.passed && !critical.length) break;
-    if (semanticRegenerations >= maxSemanticRegenerations) {
-      const detail = critical.map((issue) => `${issue.scope}.${issue.id}: ${issue.message}`).join("; ") || reviewed.value.summary;
-      throw new Error(`Owner-readability review rejected the map after ${semanticReviews} review(s): ${detail}`);
-    }
-    semanticRegenerations += 1;
-    onProgress?.({ phase: "regenerating", attempt: semanticRegenerations, detail: reviewed.value.summary, at: new Date().toISOString() });
-    generation = await runner({
-      role: "architect", cwd: root,
-      prompt: architectRegenerationPrompt({ snapshot, refresh, viewpoint, language, value, review: reviewed.value }),
-      outputSchema: ARCHITECT_OUTPUT_SCHEMA,
-      profile: generation.profile || result.profile || profile,
-      onProgress: (progress) => onProgress?.({ ...progress, phase: progress.phase === "starting" ? "regenerating" : progress.phase, attempt: semanticRegenerations }),
-    });
-    value = generation.value;
-    if (generation.threadId) threadIds.push(generation.threadId);
-  }
-  onProgress?.({ phase: "applying", attempt: repairs, at: new Date().toISOString() });
-  const applied = applyArchitecture(value, { actor: "architect", refresh });
-  return {
-    provider: "codex",
-    model: result.profile?.model || profile?.model,
-    effort: result.profile?.effort || profile?.effort,
-    threadId: result.threadId,
-    threadIds,
-    reviewThreadIds,
-    projectTitle: value.projectTitle,
-    areas: value.areas.length,
-    entities: value.entities.length,
-    relations: value.relations.length,
-    repairs,
-    semanticReviews,
-    semanticRegenerations,
-    reviewWarnings,
-    events: applied.events,
-    revision: applied.snapshot.revision,
   };
+  audit.append("run.started", { refresh, viewpoint, language, architect: profile, reviewer: MODEL_PROFILES.reviewer });
+  try {
+    solSession = sessionFactory
+      ? await sessionFactory({ cwd: root, profile })
+      : runner === runCodexStructured
+        ? await createCodexStructuredSession({ cwd: root, profile })
+        : { cwd: root, profile, threadId: null, turns: 0, closed: false, close: async () => {} };
+    result = await callModel(runner, "initial", {
+      role: "architect", cwd: root, session: solSession, profile,
+      prompt: architectPrompt({ snapshot, refresh, viewpoint, language }), outputSchema: ARCHITECT_OUTPUT_SCHEMA,
+      onProgress: (progress) => onProgress?.({ ...progress, attempt: 0 }),
+    });
+    value = result.value;
+    if (result.threadId) threadIds.push(result.threadId);
+
+    while (true) {
+      let pendingError = null;
+      while (true) {
+        let validationError = pendingError; pendingError = null;
+        if (!validationError) {
+          try {
+            onProgress?.({ phase: "validating", attempt: repairs + acceptanceRepairs, at: new Date().toISOString() });
+            validateArchitecture(value, snapshot);
+            validateArchitectureLanguage(value, language);
+            validateArchitectureEvidence(value, root);
+            break;
+          } catch (caught) { validationError = caught; }
+        }
+        audit.append("validation.rejected", { attempt: repairs + 1, error: validationError.message });
+        if (repairs >= maxRepairs) throw new Error(`Architect could not produce a valid map after ${repairs} focused structural repairs: ${validationError.message}`);
+        repairs += 1;
+        onProgress?.({ phase: "repairing", attempt: repairs + acceptanceRepairs, detail: validationError.message, at: new Date().toISOString() });
+        const repaired = await callModel(runner, "structural-repair", {
+          role: "architect", cwd: root, session: solSession,
+          prompt: architectRepairPrompt({ value, snapshot, error: validationError, language }),
+          outputSchema: architectureRepairSchema(value, snapshot), timeoutMs: 8 * 60_000, profile,
+          onProgress: (progress) => onProgress?.({ ...progress, phase: progress.phase === "starting" ? "repairing" : progress.phase, attempt: repairs + acceptanceRepairs }),
+        });
+        try { assertRepairScope(value, repaired.value); value = repaired.value; }
+        catch (scopeError) { pendingError = scopeError; }
+      }
+
+      const reviewDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-review-"));
+      let reviewed;
+      try {
+        onProgress?.({ phase: "reviewing", attempt: repairs + acceptanceRepairs, at: new Date().toISOString() });
+        reviewed = await callModel(reviewer, "owner-review", {
+          role: "reviewer", cwd: reviewDirectory,
+          prompt: architectReviewPrompt(value, language), outputSchema: architectureReviewSchema(value), timeoutMs: 3 * 60_000,
+          onProgress: (progress) => onProgress?.({ ...progress, phase: "reviewing", attempt: repairs + acceptanceRepairs }),
+        });
+      } finally { fs.rmSync(reviewDirectory, { recursive: true, force: true }); }
+      semanticReviews += 1;
+      validateReviewerDecision(value, reviewed.value);
+      if (reviewed.threadId) reviewThreadIds.push(reviewed.threadId);
+      const critical = (reviewed.value.issues || []).filter((issue) => issue.severity === "critical");
+      reviewWarnings = (reviewed.value.issues || []).filter((issue) => issue.severity === "warning").length;
+      audit.append("review.completed", { review: semanticReviews, passed: reviewed.value.passed, summary: reviewed.value.summary, answers: reviewed.value.answers, issues: reviewed.value.issues });
+      if (reviewed.value.passed && !critical.length) break;
+      if (acceptanceRepairs >= maxReviewRepairs) {
+        const detail = critical.map((issue) => `${issue.scope}.${issue.id}: ${issue.message}`).join("; ") || reviewed.value.summary;
+        throw new Error(`Owner-readability review rejected the map after ${semanticReviews} review(s) and ${acceptanceRepairs} focused refinements: ${detail}`);
+      }
+
+      const baseline = value; let scopeError = "";
+      while (true) {
+        if (acceptanceRepairs >= maxReviewRepairs) throw new Error(`Architect exceeded ${maxReviewRepairs} focused acceptance refinements: ${scopeError || reviewed.value.summary}`);
+        acceptanceRepairs += 1;
+        onProgress?.({ phase: "refining", attempt: repairs + acceptanceRepairs, detail: reviewed.value.summary, at: new Date().toISOString() });
+        const refined = await callModel(runner, "acceptance-refinement", {
+          role: "architect", cwd: root, session: solSession, profile,
+          prompt: architectRefinementPrompt({ value: baseline, review: reviewed.value, scopeError }), outputSchema: ARCHITECT_OUTPUT_SCHEMA,
+          timeoutMs: 8 * 60_000,
+          onProgress: (progress) => onProgress?.({ ...progress, phase: progress.phase === "starting" ? "refining" : progress.phase, attempt: repairs + acceptanceRepairs }),
+        });
+        try { assertReviewRepairScope(baseline, refined.value, reviewed.value); value = refined.value; break; }
+        catch (scopeFailure) {
+          scopeError = scopeFailure.message;
+          audit.append("refinement.scope-rejected", { attempt: acceptanceRepairs, error: scopeError, issues: reviewed.value.issues });
+        }
+      }
+    }
+    onProgress?.({ phase: "applying", attempt: repairs + acceptanceRepairs, at: new Date().toISOString() });
+    const applied = applyArchitecture(value, { actor: "architect", refresh });
+    const output = {
+      provider: "codex", model: result.profile?.model || profile.model, effort: result.profile?.effort || profile.effort,
+      threadId: result.threadId, threadIds: [...new Set(threadIds)], reviewThreadIds: [...new Set(reviewThreadIds)],
+      projectTitle: value.projectTitle, areas: value.areas.length, entities: value.entities.length, relations: value.relations.length,
+      repairs, acceptanceRepairs, semanticReviews, semanticRegenerations: 0, reviewWarnings,
+      calls: calls.length, usage: { ...usage }, auditRunId: audit.runId, auditFile: audit.file,
+      events: applied.events, revision: applied.snapshot.revision,
+    };
+    audit.append("run.completed", output);
+    return output;
+  } catch (error) {
+    const failure = summary();
+    audit.append("run.failed", { ...failure, error: String(error?.message || error).slice(0, 2000) });
+    error.audit = failure;
+    throw error;
+  } finally {
+    await solSession?.close?.();
+  }
 }

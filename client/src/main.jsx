@@ -22,7 +22,7 @@ const ARCHITECT_PHASES = {
   validating: "Проверяем связи и сценарии",
   repairing: "Исправляем структуру результата",
   reviewing: "Проверяем карту глазами владельца",
-  regenerating: "Перестраиваем непонятный черновик",
+  refining: "Дорабатываем замечания приёмки",
   applying: "Сохраняем новую карту",
 };
 const nodeKinds = { capability: "ВОЗМОЖНОСТЬ", module: "МОДУЛЬ", service: "СЕРВИС", process: "ПРОЦЕСС", store: "ХРАНИЛИЩЕ", interface: "ИНТЕРФЕЙС", integration: "ИНТЕГРАЦИЯ", external: "ВНЕШНЯЯ СИСТЕМА", component: "КОМПОНЕНТ", person: "УЧАСТНИК" };
@@ -360,8 +360,8 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
   const architectKey = architect?.finishedAt || architect?.startedAt;
   const showArchitect = architect && architect.status !== "idle" && architectKey !== dismissedArchitect;
   const architectConnected = architect?.heartbeatAt && Date.now() - Date.parse(architect.heartbeatAt) < 20_000;
-  const architectMessage = architect?.status === "failed" ? architect.error : architect?.status === "done"
-    ? `${architect.result?.areas || 0} областей · ${architect.result?.entities || 0} элементов · ${architect.result?.relations || 0} связей${architect.result?.semanticReviews ? ` · проверок понятности: ${architect.result.semanticReviews}` : ""}${architect.result?.semanticRegenerations ? ` · перестроений: ${architect.result.semanticRegenerations}` : ""}${architect.result?.repairs ? ` · исправлений: ${architect.result.repairs}` : ""}`
+  const architectMessage = architect?.status === "failed" ? `${architect.error}${architect.result?.calls ? ` · вызовов: ${architect.result.calls}` : ""}${architect.result?.usage?.totalTokens ? ` · токенов: ${architect.result.usage.totalTokens.toLocaleString("ru-RU")}` : ""}` : architect?.status === "done"
+    ? `${architect.result?.areas || 0} областей · ${architect.result?.entities || 0} элементов · ${architect.result?.relations || 0} связей${architect.result?.semanticReviews ? ` · проверок понятности: ${architect.result.semanticReviews}` : ""}${architect.result?.acceptanceRepairs ? ` · доработок: ${architect.result.acceptanceRepairs}` : ""}${architect.result?.repairs ? ` · исправлений: ${architect.result.repairs}` : ""}${architect.result?.usage?.totalTokens ? ` · токенов: ${architect.result.usage.totalTokens.toLocaleString("ru-RU")}` : ""}`
     : architect?.attempt > 0 ? `Проверка нашла несогласованность — корректирующая попытка ${architect.attempt}` : architectConnected ? "Агент на связи, Canvas получает heartbeat" : "Модель думает; сервер продолжает следить за процессом";
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><i></i><i></i><i></i><span><strong>Repo Canvas</strong><small>{snapshot.map?.projectTitle || "живая карта проекта"}</small></span></div><div className="telemetry"><span><small>ОБЛАСТИ</small><strong>{snapshot.areas.length}</strong></span><span><small>ЭЛЕМЕНТЫ</small><strong>{snapshot.entities.length}</strong></span><span className="hot"><small>В РАБОТЕ</small><strong>{snapshot.summary.activeWork}</strong></span><span className="connection"><i></i><b>{unauthorized ? "нет доступа" : "онлайн"}</b></span></div></header>
