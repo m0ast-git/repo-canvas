@@ -16,7 +16,7 @@ Install this project-visualization tool in the current repository, build the ini
 The agent will follow [`INSTALL_WITH_AGENT.txt`](INSTALL_WITH_AGENT.txt). The exact commands are:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.10.0
+npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.10.1
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```
@@ -79,16 +79,16 @@ The server binds to loopback only and opens a plain local Canvas URL. Loading th
 
 Internal Architect and Observer calls use the official local Codex runtime with the user's existing subscription authentication. Each call gets a temporary clean Codex home containing only a filesystem link to that authentication: project/global AGENTS files, skills, memories, plugins, hooks and MCP servers are excluded, the process has read-only repository access, and the temporary home is removed afterward. No API key or credential copy is added to the project. Windows launches use a hidden process; macOS and Linux use their native packaged Codex binary. Claude and Kimi adapters only parse their local journals; they do not copy credentials or call those providers.
 
-From v0.8.6 onward, Canvas checks the public GitHub release feed in the background. If a newer release exists, an `Update` control appears at the bottom of the page. The updater requires the official `.tgz` asset and its GitHub SHA-256 digest, installs it side-by-side inside ignored `.repo-canvas/runtime/`, restarts the local server with the same browser authorization and keeps the previous runtime as a rollback. It does not rewrite the project's dependency or lockfile.
+From v0.8.6 onward, Canvas checks the public GitHub release feed in the background. If a newer release exists, an `Update` control appears at the bottom of the page. During installation the page follows the restart every 750 ms and reloads itself as soon as the new runtime is healthy. The updater requires the official `.tgz` asset and its GitHub SHA-256 digest, installs it side-by-side inside ignored `.repo-canvas/runtime/`, restarts the local server with the same browser authorization and keeps the previous runtime as a rollback. It does not rewrite the project's dependency or lockfile.
 
 ## Offline installation
 
-Download `repo-canvas-0.10.0-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.10.0.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
+Download `repo-canvas-0.10.1-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.10.1.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
 
 Manual commands:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.10.0.tgz
+npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.10.1.tgz
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```

@@ -16,11 +16,11 @@ REPO CANVAS — УСТАНОВКА В СУЩЕСТВУЮЩИЙ ПРОЕКТ
 
    Если владелец дал ссылку на GitHub:
 
-   npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.10.0
+   npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.10.1
 
-   Если в корне проекта лежит `repo-canvas-0.10.0.tgz`:
+   Если в корне проекта лежит `repo-canvas-0.10.1.tgz`:
 
-   npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.10.0.tgz
+   npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.10.1.tgz
 
    Затем выполни:
 
