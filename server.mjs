@@ -227,6 +227,7 @@ function saveLayout(body) {
   if (requestedRevision !== snapshot.revision) throw new HttpError(409, "Canvas changed; refresh before saving layout", { revision: snapshot.revision });
   const areas = new Map(snapshot.areas.map((item) => [item.id, item]));
   const entities = new Map(snapshot.entities.map((item) => [item.id, item]));
+  const work = new Map(snapshot.work.map((item) => [item.id, item]));
   const seen = new Set();
   const events = body.items.map((item) => {
     const kind = String(item?.kind || ""); const id = String(item?.id || "").trim();
@@ -243,6 +244,11 @@ function saveLayout(body) {
       const current = entities.get(id); if (!current) throw new HttpError(404, `Entity not found: ${id}`);
       const { actor, updatedAt, ...payload } = current;
       return createEvent("entity.upsert", { actor: "owner", payload: { ...payload, x, y } });
+    }
+    if (kind === "work") {
+      const current = work.get(id); if (!current) throw new HttpError(404, `Work not found: ${id}`);
+      const { actor, updatedAt, ...payload } = current;
+      return createEvent("work.upsert", { actor: actor || "owner", payload: { ...payload, x, y } });
     }
     throw new HttpError(400, `Unsupported layout item kind: ${kind}`);
   });

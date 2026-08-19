@@ -16,7 +16,7 @@ Install this project-visualization tool in the current repository, build the ini
 The agent will follow [`INSTALL_WITH_AGENT.txt`](INSTALL_WITH_AGENT.txt). The exact commands are:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.11.2
+npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.12.0
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```
@@ -33,9 +33,10 @@ The server opens the protected loopback URL in your default browser. Keep that f
 - live work attached to every semantic entity it affects;
 - entity passports and recent activity in the left rail;
 - collapsible project sections, full-map reset and an in-canvas legend;
-- draggable area headers and entity cards with immediate, saved movement of their nested contents;
+- soft area territories, transparent subsystem contours and filled entity cards, so visual nesting does not become a stack of competing panels;
+- one drag contract for area headers, subsystem tabs, entity cards, human participants and live work, with immediate saved movement of nested contents;
 - owner-controlled area and entity names and descriptions, plus relation labels, by double-clicking the object;
-- light and dark themes, readable active-area emphasis and relation labels revealed by a forgiving line hover;
+- light and dark themes, readable active-area emphasis, persistent relation labels and a forgiving line hover for bundled details;
 - distinct header controls for reloading current Canvas data and regenerating the semantic map with Architect;
 - a persistent Architect status surface with current phase, heartbeat, elapsed time, validation repair and the final result;
 - a local Update button that appears only when a newer verified release is available;
@@ -45,7 +46,7 @@ The data model has no fixed entity cap. One Canvas can hold a small project or a
 
 The map keeps one stable project geography at every zoom: areas, nested capabilities and concrete entities never disappear or jump to another composition. Zoom only changes where live activity is emphasized: an area while cards are too small to read, the affected entity at middle distance, and the exact agent work card when it becomes readable. Area colors also identify outgoing relations. React Flow keeps interaction smooth while ELK computes the composition off the main UI thread; the relation router reserves separate lanes and keeps labels outside cards.
 
-Dragging empty canvas space always moves the camera. An area moves from its framed header; an entity moves from its card. The small `⠿` mark identifies those draggable surfaces, while the surrounding area body remains available for panning.
+Dragging empty canvas space always moves the camera, including the empty interior of an area or subsystem contour. An area moves from its framed header, a subsystem from its label tab and an entity or work item from its card. When a child is moved by itself, its transparent subsystem contour expands immediately to keep the semantic grouping visible. The small `⠿` mark identifies draggable surfaces. A zero-threshold pointer contract keeps even a fast single-motion drag aligned with the cursor, while Libavoid recomputes the same obstacle-aware routes for every graph-item type.
 
 ## How it works
 
@@ -53,7 +54,7 @@ Dragging empty canvas space always moves the camera. An area moves from its fram
 
 Before anything is written, Repo Canvas validates area membership, hierarchy, evidence paths, relation endpoints, removal references, participant placement and every end-to-end flow step. If the model returns an inconsistent cross-reference, the exact error returns to the same Sol session through a bounded repair using an explicit enum of allowed ids. A separate `gpt-5.6-luna` reviewer sees only the proposed map and answers what the project does, how it is divided and how its main lifecycle works. Each critical issue must point to an exact existing map id. Sol may refine that area and its necessary adjacent relations, while deterministic scope checks prevent changes to unrelated areas. The reviewer repeats until the map passes or the bounded focused-repair limit is exhausted; an incomprehensible result is never applied.
 
-When the Canvas server is running, Observer watches public local session journals for this repository. It creates a provisional card on the first observed turn event, then uses `gpt-5.6-luna` at low reasoning to classify small event deltas and attach the work to the map. On completion, Observer updates affected passports and relations when the session contains enough evidence.
+When the Canvas server is running, Observer watches public local session journals for this repository. It creates a provisional card on the first observed turn event, then uses `gpt-5.6-luna` at low reasoning to classify small event deltas and attach the work to the map. On completion, Observer updates affected passports and relations when the session contains enough evidence. The `Сейчас` rail only shows work confirmed by a recent public signal; abandoned Observer cards stop automatically after 15 minutes without activity instead of remaining live forever.
 
 Observer supports:
 
@@ -85,12 +86,12 @@ From v0.8.6 onward, Canvas checks the public GitHub release feed in the backgrou
 
 ## Offline installation
 
-Download `repo-canvas-0.11.2-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.11.2.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
+Download `repo-canvas-0.12.0-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.12.0.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
 
 Manual commands:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.11.2.tgz
+npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.12.0.tgz
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```

@@ -549,6 +549,7 @@ test("loopback server guards navigation, reports port collision, and stops", asy
     items: [
       { kind: "area", id: "core", x: 180, y: 220 },
       { kind: "entity", id: "module", x: 260, y: 340 },
+      { kind: "work", id: "demo", x: 540, y: 360 },
     ],
   });
   const layout = await request(port, {
@@ -558,10 +559,12 @@ test("loopback server guards navigation, reports port collision, and stops", asy
     body: layoutPayload,
   });
   assert.equal(layout.status, 201, layout.text);
-  assert.equal(layout.json.saved, 2);
+  assert.equal(layout.json.saved, 3);
   const movedState = await request(port, { path: "/api/state", headers: authHeaders });
   assert.deepEqual([movedState.json.areas[0].x, movedState.json.areas[0].y], [180, 220]);
   assert.deepEqual([movedState.json.entities[0].x, movedState.json.entities[0].y], [260, 340]);
+  assert.deepEqual([movedState.json.work[0].x, movedState.json.work[0].y], [540, 360]);
+  assert.equal(movedState.json.work[0].actor, "codex", "moving work must preserve the owning agent");
   let renameRevision = movedState.json.revision;
   for (const [kind, id, value] of [
     ["area", "core", "Runtime"],

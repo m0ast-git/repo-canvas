@@ -169,6 +169,7 @@ export function validateEvent(event) {
     requireIdList(errors, payload.targets, "payload.targets", { allowEmpty: payload.provisional === true });
     optionalString(errors, payload.note, "payload.note", 2000);
     validateSessionLocator(errors, payload.session);
+    for (const field of ["x", "y"]) if (payload[field] !== undefined) requireFiniteNumber(errors, payload[field], `payload.${field}`);
   } else if (event.type === "activity.log") {
     requireString(errors, payload.message, "payload.message", { max: 4000 });
     if (payload.level !== undefined) requireStatus(errors, payload.level, "payload.level", ACTIVITY_LEVELS);
