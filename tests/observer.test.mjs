@@ -24,7 +24,7 @@ const sessions = await import("../repo-canvas/scripts/codex-sessions.mjs");
 const semantic = await import("../repo-canvas/scripts/semantic-model.mjs");
 const architect = await import("../repo-canvas/scripts/architect.mjs");
 const runtime = await import("../repo-canvas/scripts/runtime-config.mjs");
-const { CodexObserver, compactObserverState, observerPrompt } = await import("../repo-canvas/scripts/observer.mjs");
+const { CodexObserver, STALE_TURN_MS, compactObserverState, observerPrompt } = await import("../repo-canvas/scripts/observer.mjs");
 
 function approvedReview(overrides = {}) {
   return {
@@ -204,6 +204,29 @@ test("observer publishes immediately, classifies deltas, and removes concepts on
   assert.ok(!snapshot.entities.some((entity) => entity.id === "legacy"));
   assert.equal(snapshot.work.at(-1).status, "done");
   assert.equal(snapshot.work.at(-1).session.kind, "codex-app");
+});
+
+test("observer stops a turn that has no fresh public signal", async () => {
+  const id = "stale-observer-work";
+  store.appendEvent(store.createEvent("work.upsert", { actor: "observer", payload: {
+    id, title: "Старая работа", status: "active", targets: [], provisional: true,
+    note: "Ожидание", session: { kind: "codex-app", id: "stale-session", cwd: root },
+  } }));
+  const observer = new CodexObserver({
+    config: { enabled: true, repoRoot: root, providers: ["codex"], pollMs: 250 },
+    adapters: [], now: () => STALE_TURN_MS + 2_000,
+    state: { version: 3, initializedProviders: ["codex"], sessions: {
+      stale: { relevant: true, provider: "codex", meta: { id: "stale-session", cwd: root }, turns: {
+        turn: { turnId: "turn", workId: id, sessionId: "stale-session", provider: "codex", startedAt: 1_000, lastActivityAt: 1_000, events: [], inferredAt: 1_000, initialInferred: true, title: "Старая работа", summary: "Ожидание", targets: [], finished: false },
+      } },
+    } },
+    runner: async () => { throw new Error("stale turns must not call the model"); },
+    writeState: () => {},
+  });
+  await observer.runDue();
+  const work = store.getSnapshot().work.find((item) => item.id === id);
+  assert.equal(work.status, "stopped");
+  assert.equal(observer.summary().activeTurns, 0);
 });
 
 test("architect rejects relations to entities removed by the same refresh", () => {

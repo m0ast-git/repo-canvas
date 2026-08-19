@@ -32,7 +32,7 @@ Work in this order before producing output:
 4. Admit a normal map entity only when all three are true: it has one named responsibility, durable repository evidence, and it is a meaningful target for implementation or understanding work. A capability is allowed only when it has its own evidenced responsibility; an end-to-end narrative that merely repeats a keyFlow is not an entity.
 5. When the product genuinely involves a human user, operator, reviewer or other participant, represent that person with kind=person as outside context: areaId="", parentId="", path="". Use the concrete domain role from primary evidence. Its purpose describes only what that person inputs, does, decides, expects or receives; never assign the system's whole workflow to a person. Every person must have at least one explanatory relation to a project entity.
 6. Keep non-human external systems as kind=external. Input files, output files and abstract outcomes belong in relation contracts or keyFlow trigger/outcome text unless the repository manages them as an actual store or contract.
-7. Build a parent hierarchy only when a parent owns a broader responsibility and its children are independently useful work targets. Service, store, interface and integration may be peers when they share the same responsibility depth. Never duplicate one concept as both a broad narrative node and its implementation boundary.
+7. Build a parent hierarchy only when a parent owns a broader responsibility and its children are independently useful work targets. A parent is a transparent subsystem contour around its children, not another project area. Service, store, interface and integration may be peers when they share the same responsibility depth. Never add a parent merely to group a folder, framework or technology, and never duplicate one concept as both a broad narrative node and its implementation boundary.
 8. Trace important end-to-end scenarios from trigger to outcome. keyFlows validate coverage and direction through real project entities; people and conceptual actions stay in trigger/outcome text and are not keyFlow steps.
 9. Derive relations from actual runtime, data, control, event, contract or necessary dependency evidence, then review the draft against the quality gates below.
 
@@ -41,11 +41,14 @@ Language contract:
 - a non-empty owner viewpoint is the strongest language signal; otherwise use the language of user-facing product text and primary project documentation;
 - code identifiers, filenames, protocol names and contract names may remain technical, but do not turn them into unexplained user-visible jargon;
 - write for the repository owner: prefer plain domain language over framework slang, abbreviations and architecture terminology the project itself does not explain.
+- clarity and exact responsibility beat artificial brevity: do not compress a meaningful role into a cryptic noun phrase just to keep a label short;
+- a conjunction in a title is a warning to re-check the boundary, not an automatic error: keep it only when the evidence proves one inseparable responsibility rather than two convenient buckets.
 
 Requirements:
 - stable concise ASCII ids;
 - short Russian labels and descriptions when repository context is Russian, otherwise use its working language;
 - every area title answers 'what responsibility lives here?' in concrete owner language; avoid abstract buckets such as 'user product', 'runtime', src, backend, utils, misc or tests;
+- an area is a domain responsibility territory, never a technology layer or a renamed keyFlow; put implementation boundaries and technical stack detail in evidenced parent/entity passports;
 - normal entities may be capabilities, modules, services, processes, stores, interfaces, integrations, externals or components; human participants use kind=person and stay outside all areas;
 - do not mirror folders, individual files, classes, helpers, tests or completed tasks;
 - every entity has concrete repository evidence; use evidence paths/symbols as references, never as the entity identity;
@@ -238,6 +241,8 @@ Use ${language === "ru" ? "Russian" : language === "en" ? "English" : "the map's
 Pass only when all critical conditions hold:
 - projectSummary plainly says what the project does, for whom when relevant, what enters and what useful result leaves;
 - every area title and note identify one concrete responsibility and distinguish it from sibling areas;
+- no area is merely a technology layer, folder cluster, generic audience bucket or renamed end-to-end flow;
+- every parent entity is an evidenced subsystem responsibility around independently useful children, not a second area or decorative grouping box;
 - every normal entity names one project-owned responsibility and is a credible target for work, not a person, file, abstract outcome or whole end-to-end story;
 - every person is a concrete human role, sits outside areas, has a narrow purpose describing only its actions/inputs/decisions/expectations, and is connected by an explanatory relation;
 - no concept is duplicated as both a broad narrative node and its implementation boundary;

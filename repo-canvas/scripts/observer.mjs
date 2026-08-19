@@ -13,6 +13,7 @@ const INITIAL_DEADLINE_MS = 5_000;
 const UPDATE_INTERVAL_MS = 30_000;
 const DISCOVERY_INTERVAL_MS = 2_000;
 const ERROR_DEDUPE_MS = 60_000;
+export const STALE_TURN_MS = 15 * 60_000;
 
 export function compactSessionMeta(meta = {}) {
   const compact = {};
@@ -108,6 +109,13 @@ function activityError(message) {
   appendEvent(createEvent("activity.log", { actor: "observer", payload: { message, level: "warning" } }));
 }
 
+function staleWorkCopy(...values) {
+  const russian = /[А-Яа-яЁё]/.test(values.filter(Boolean).join(" "));
+  return russian
+    ? { title: "Работа без свежего сигнала", note: "Сессия не подтверждала активность более 15 минут" }
+    : { title: "Work without a fresh signal", note: "The session has not confirmed activity for more than 15 minutes" };
+}
+
 export class CodexObserver {
   constructor({
     config = readRuntimeConfig(),
@@ -200,7 +208,7 @@ export class CodexObserver {
       const turn = {
         turnId, workId: workId(session.meta.id || session.meta.session_id, turnId),
         sessionId: session.meta.id || session.meta.session_id, provider: session.provider || "codex",
-        startedAt: this.now(), events: [], inferredAt: 0, initialInferred: false,
+        startedAt: this.now(), lastActivityAt: this.now(), events: [], inferredAt: 0, initialInferred: false,
         title: "Новая работа", summary: "Агент осмысливает задачу", targets: [], finished: false,
       };
       session.turns[turnId] = turn;
@@ -210,6 +218,7 @@ export class CodexObserver {
     }
     const turn = this.currentTurn(session, signal.turnId);
     if (!turn) return;
+    turn.lastActivityAt = this.now();
     if (signal.kind === "context") {
       turn.model = signal.model; turn.effort = signal.effort;
       this.markDirty();
@@ -235,6 +244,68 @@ export class CodexObserver {
     }
     if (signal.kind === "tool" && signal.name === "update_plan") turn.priorityPending = true;
     this.markDirty();
+  }
+
+  stopTurnWithoutSignal(turn) {
+    const copy = staleWorkCopy(turn.title, turn.summary, turn.userMessage);
+    appendEvent(createEvent("work.upsert", {
+      actor: "observer",
+      payload: {
+        id: turn.workId,
+        title: turn.title || copy.title,
+        status: "stopped",
+        targets: turn.targets || [],
+        note: copy.note,
+        provisional: (turn.targets || []).length === 0,
+        session: turn.session || sessionAdapter(turn.provider || "codex").locator({ id: turn.sessionId, cwd: this.config.repoRoot }),
+      },
+    }));
+    turn.finished = true;
+    turn.finalKind = "stale";
+    turn.finalPending = false;
+    turn.priorityPending = false;
+    turn.events = [];
+    this.markDirty();
+  }
+
+  expireStaleTurns() {
+    for (const session of Object.values(this.state.sessions)) {
+      if (!session.relevant) continue;
+      for (const turn of Object.values(session.turns || {})) {
+        if (turn.finished || this.running.has(turn.workId)) continue;
+        const lastActivityAt = Number(turn.lastActivityAt || turn.inferredAt || turn.startedAt || 0);
+        if (lastActivityAt && this.now() - lastActivityAt >= STALE_TURN_MS) this.stopTurnWithoutSignal(turn);
+      }
+    }
+  }
+
+  reconcileStaleObserverWork() {
+    const snapshot = getSnapshot();
+    const openWorkIds = new Set();
+    for (const session of Object.values(this.state.sessions)) {
+      if (!session.relevant) continue;
+      for (const turn of Object.values(session.turns || {})) {
+        const lastActivityAt = Number(turn.lastActivityAt || turn.inferredAt || turn.startedAt || 0);
+        if (!turn.finished && lastActivityAt && this.now() - lastActivityAt < STALE_TURN_MS) openWorkIds.add(turn.workId);
+      }
+    }
+    for (const work of snapshot.work || []) {
+      if (work.actor !== "observer" || !["active", "blocked", "planned"].includes(work.status)) continue;
+      if (openWorkIds.has(work.id)) continue;
+      const updatedAt = Date.parse(work.updatedAt || "");
+      if (!Number.isFinite(updatedAt) || this.now() - updatedAt < STALE_TURN_MS) continue;
+      const copy = staleWorkCopy(work.title, work.note);
+      appendEvent(createEvent("work.upsert", {
+        actor: "observer",
+        payload: {
+          ...work,
+          actor: undefined,
+          updatedAt: undefined,
+          status: "stopped",
+          note: copy.note,
+        },
+      }));
+    }
   }
 
   async infer(turn, final = false) {
@@ -283,6 +354,8 @@ export class CodexObserver {
   }
 
   async runDue() {
+    this.expireStaleTurns();
+    this.reconcileStaleObserverWork();
     const pending = [];
     for (const session of Object.values(this.state.sessions)) {
       if (!session.relevant) continue;

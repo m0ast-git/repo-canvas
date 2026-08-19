@@ -218,6 +218,7 @@ function workPositions(snapshot, entityRects, areaRects) {
     ...areaRects.values().map((rect) => ({ x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_H - 20 })),
   ];
   for (const work of (snapshot.work || []).filter((item) => ["active", "blocked", "planned"].includes(item.status))) {
+    const manual = Number.isFinite(Number(work.x)) && Number.isFinite(Number(work.y)) ? { x: Number(work.x), y: Number(work.y) } : null;
     const targets = (work.targets || []).map((id) => entityRects.get(id)).filter(Boolean);
     const anchor = targets.length ? {
       x: Math.min(...targets.map((rect) => rect.x)), y: Math.min(...targets.map((rect) => rect.y)),
@@ -248,7 +249,7 @@ function workPositions(snapshot, entityRects, areaRects) {
       const rect = { ...candidate, width: WORK_W, height: WORK_H };
       return !obstacles.some((item) => boxesOverlap(rect, item, 18)) && !placed.some((item) => boxesOverlap(rect, item, 22));
     };
-    let selected = candidates.find(fits);
+    let selected = manual || candidates.find(fits);
     if (!selected) {
       const farRight = Math.max(180, ...obstacles.map((rect) => rect.x + rect.width)) + 80;
       selected = { x: farRight, y: 180 + placed.length * (WORK_H + 30) };
@@ -310,7 +311,7 @@ function aggregateRelations(snapshot) {
     const current = grouped.get(key) || { id: `relation:${key}`, source, target, status: relation.status || "existing", relations: [], priority: relation.status === "planned" ? 1 : 0 };
     current.relations.push(relation); grouped.set(key, current);
   }
-  return [...grouped.values()].map((edge) => ({ ...edge, type: "relation", label: edge.relations.length === 1 ? (edge.relations[0].ownerLabel || edge.relations[0].label || "") : `${edge.relations.length} связи`, relationId: edge.relations.length === 1 ? edge.relations[0].id : "", sourceAreaId: areaByEntity.get(edge.relations[0].from), targetAreaId: areaByEntity.get(edge.relations[0].to) }));
+  return [...grouped.values()].map((edge) => ({ ...edge, type: "relation", label: edge.relations.length === 1 ? (edge.relations[0].ownerLabel || edge.relations[0].label || "") : `${edge.relations.length} связей`, relationId: edge.relations.length === 1 ? edge.relations[0].id : "", sourceAreaId: areaByEntity.get(edge.relations[0].from), targetAreaId: areaByEntity.get(edge.relations[0].to) }));
 }
 
 function aggregateAreaRelations(snapshot) {
@@ -405,8 +406,11 @@ async function routeLiveMoves(message, emitPriority) {
     liveContext.areaRoutes = mergeRoutes(liveContext.areaRoutes, areaRoutes);
     emitPriority?.({ routes: [], areaRoutes });
   }
-  // Detailed routes only need their final geometry after the area is released.
-  if ((movedAreaIds.size || movedPersonIds.size) && !message.settle) return null;
+  // Keep the latest pointer position ahead of hidden detailed work. Once the
+  // drag stream catches up, detailed routes are precomputed for zoom-in.
+  if (pendingLive && !message.settle) return null;
+  // Every visible graph item follows the same contract: route the affected
+  // detailed edges during the drag as well as the projected overview edges.
   const routes = (await routeView(liveContext.snapshot, geometry, liveContext.hierarchy, liveContext.colors, (edge) => movedNodeIds.has(edge.source) || movedNodeIds.has(edge.target))).routes;
   liveContext.routes = mergeRoutes(liveContext.routes, routes);
   return { routes, areaRoutes: [] };
