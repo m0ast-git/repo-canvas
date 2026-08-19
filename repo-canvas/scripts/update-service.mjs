@@ -4,6 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 import { packageRoot, projectRoot, resolveDataDirectory } from "./project-root.mjs";
+import { replaceFileSync } from "./atomic-file.mjs";
 import { compareVersions, normalizeVersion } from "./runtime-version.mjs";
 
 const RELEASE_API = "https://api.github.com/repos/m0ast-git/repo-canvas/releases/latest";
@@ -19,7 +20,7 @@ function atomicWriteJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`);
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(temporary, file);
+  replaceFileSync(temporary, file, { rename: fs.renameSync });
 }
 
 function currentPackageVersion() {
@@ -72,6 +73,12 @@ export function createUpdateService({ host, port, apiToken, shutdown } = {}) {
 
   function publicState() {
     const persisted = diskState();
+    if (!candidate && persisted.status === "updated" && persisted.toVersion === currentVersion) {
+      return {
+        currentVersion, status: "updated", availableVersion: null, lastCheckedAt,
+        fromVersion: persisted.fromVersion || null, finishedAt: persisted.finishedAt || null,
+      };
+    }
     if (persisted.status === "applying" && persisted.fromVersion === currentVersion) {
       return { currentVersion, status: "applying", availableVersion: persisted.toVersion, lastCheckedAt };
     }

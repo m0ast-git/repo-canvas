@@ -3,40 +3,20 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 import { dataDirectory, projectRoot } from "./canvas-store.mjs";
+import { replaceFileSync as replaceFile } from "./atomic-file.mjs";
+export { replaceFileSync } from "./atomic-file.mjs";
 
 export const runtimeConfigFile = path.join(dataDirectory, "runtime.json");
 export const observerStateFile = path.join(dataDirectory, "observer-state.json");
+export const architectStateFile = path.join(dataDirectory, "architect-state.json");
 export const apiTokenFile = path.join(dataDirectory, "api-token");
-
-const RETRYABLE_REPLACE_ERRORS = new Set(["EPERM", "EACCES", "EBUSY"]);
-const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
-
-function sleepSync(milliseconds) {
-  Atomics.wait(sleepBuffer, 0, 0, milliseconds);
-}
-
-export function replaceFileSync(source, target, {
-  rename = fs.renameSync,
-  attempts = 8,
-  wait = sleepSync,
-} = {}) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      rename(source, target);
-      return;
-    } catch (error) {
-      if (!RETRYABLE_REPLACE_ERRORS.has(error?.code) || attempt >= attempts - 1) throw error;
-      wait(Math.min(160, 10 * (2 ** attempt)));
-    }
-  }
-}
 
 function atomicWrite(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
     fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    replaceFileSync(temporary, file);
+    replaceFile(temporary, file, { rename: fs.renameSync });
   } finally {
     try { fs.unlinkSync(temporary); } catch { /* best-effort cleanup after replace */ }
   }
@@ -47,7 +27,7 @@ function atomicWriteText(file, value) {
   const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
     fs.writeFileSync(temporary, value, { encoding: "utf8", mode: 0o600 });
-    replaceFileSync(temporary, file);
+    replaceFile(temporary, file, { rename: fs.renameSync });
   } finally {
     try { fs.unlinkSync(temporary); } catch { /* best-effort cleanup after replace */ }
   }
@@ -101,4 +81,17 @@ export function readObserverState() {
 
 export function writeObserverState(state) {
   atomicWrite(observerStateFile, state);
+}
+
+export function readArchitectState() {
+  try {
+    return JSON.parse(fs.readFileSync(architectStateFile, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+    return null;
+  }
+}
+
+export function writeArchitectState(state) {
+  atomicWrite(architectStateFile, state);
 }

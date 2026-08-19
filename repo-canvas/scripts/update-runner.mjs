@@ -6,6 +6,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { replaceFileSync } from "./atomic-file.mjs";
 
 const MAX_ASSET_BYTES = 50 * 1024 * 1024;
 
@@ -19,7 +20,7 @@ function atomicWriteJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`);
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(temporary, file);
+  replaceFileSync(temporary, file, { rename: fs.renameSync });
 }
 
 function delay(milliseconds) {

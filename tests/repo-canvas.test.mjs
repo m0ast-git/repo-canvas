@@ -644,3 +644,39 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   restarted.kill("SIGTERM");
   await waitForExit(restarted, 2_500);
 });
+
+test("architect status survives a restart and interrupted work is explicit", async (t) => {
+  const root = makeRepository(t);
+  const stateFile = path.join(root, ".repo-canvas", "architect-state.json");
+  const completed = {
+    status: "done", phase: "done", startedAt: "2026-08-19T10:00:00.000Z",
+    heartbeatAt: "2026-08-19T10:05:00.000Z", finishedAt: "2026-08-19T10:05:00.000Z",
+    attempt: 1, activityCount: 5, detail: null, result: { areas: 3, calls: 2 }, error: null,
+  };
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(stateFile, `${JSON.stringify(completed)}\n`);
+  const port = await freePort();
+  const launch = () => spawn(process.execPath, [cli, "start", "--no-open", "--root", root, "--port", String(port)], {
+    cwd: root, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let server = launch();
+  t.after(() => { if (server.exitCode === null) server.kill("SIGTERM"); });
+  await waitForOutput(server, /listening at/);
+  const apiToken = fs.readFileSync(path.join(root, ".repo-canvas", "api-token"), "utf8").trim();
+  const headers = { Host: `127.0.0.1:${port}`, "X-Repo-Canvas-Token": apiToken };
+  const restored = await request(port, { path: "/api/architect/status", headers });
+  assert.equal(restored.json.status, "done");
+  assert.deepEqual(restored.json.result, completed.result);
+  server.kill("SIGTERM");
+  await waitForExit(server, 2_500);
+
+  fs.writeFileSync(stateFile, `${JSON.stringify({ ...completed, status: "running", phase: "reviewing", finishedAt: null })}\n`);
+  server = launch();
+  await waitForOutput(server, /listening at/);
+  const interrupted = await request(port, { path: "/api/architect/status", headers });
+  assert.equal(interrupted.json.status, "failed");
+  assert.match(interrupted.json.error, /прерван перезапуском/);
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).status, "failed");
+  server.kill("SIGTERM");
+  await waitForExit(server, 2_500);
+});

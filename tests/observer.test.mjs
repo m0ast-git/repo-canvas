@@ -431,6 +431,10 @@ test("observer state stays compact and atomic replacement retries transient Wind
   });
   assert.equal(attempts, 4);
   assert.deepEqual(waits, [10, 20, 40]);
+
+  const architectStatus = { status: "running", phase: "reviewing", startedAt: "2026-08-19T10:00:00.000Z" };
+  runtime.writeArchitectState(architectStatus);
+  assert.deepEqual(runtime.readArchitectState(), architectStatus);
 });
 
 test("idle observer polls do not rewrite unchanged state", async () => {

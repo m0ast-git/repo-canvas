@@ -7,7 +7,7 @@ import path from "node:path";
 import { appendEvents, createEvent, getSnapshot, packageRoot, projectRoot } from "./repo-canvas/scripts/canvas-store.mjs";
 import { runArchitect } from "./repo-canvas/scripts/architect.mjs";
 import { startObserver } from "./repo-canvas/scripts/observer.mjs";
-import { readOrCreateApiToken, readRuntimeConfig } from "./repo-canvas/scripts/runtime-config.mjs";
+import { readArchitectState, readOrCreateApiToken, readRuntimeConfig, writeArchitectState } from "./repo-canvas/scripts/runtime-config.mjs";
 import { openSessionLocator } from "./repo-canvas/scripts/session-locator.mjs";
 import { createUpdateService } from "./repo-canvas/scripts/update-service.mjs";
 
@@ -24,10 +24,23 @@ if (configuredApiToken && !/^[A-Za-z0-9_-]{43}$/.test(configuredApiToken)) {
 const apiToken = configuredApiToken || readOrCreateApiToken();
 let observerService = null;
 let architectJob = null;
-let architectState = {
+const idleArchitectState = {
   status: "idle", phase: "idle", startedAt: null, heartbeatAt: null, finishedAt: null,
   attempt: 0, activityCount: 0, detail: null, result: null, error: null,
 };
+let architectState = readArchitectState() || idleArchitectState;
+function persistArchitectState() {
+  try { writeArchitectState(architectState); }
+  catch (error) { console.warn(`Repo Canvas could not persist Architect status: ${error.message}`); }
+}
+if (architectState.status === "running") {
+  const interruptedAt = new Date().toISOString();
+  architectState = {
+    ...architectState, status: "failed", phase: "failed", heartbeatAt: interruptedAt, finishedAt: interruptedAt,
+    error: "Architect был прерван перезапуском локального Canvas. Запустите повторную генерацию ещё раз.",
+  };
+  persistArchitectState();
+}
 const updateService = createUpdateService({ host, port, apiToken, shutdown });
 
 function publicArchitectState() {
@@ -48,6 +61,7 @@ function architectProgress(progress = {}) {
     activityCount: architectState.activityCount + 1,
     detail: Object.hasOwn(progress, "detail") ? progress.detail : architectState.detail,
   };
+  persistArchitectState();
 }
 
 function startArchitectRefresh(viewpoint = "") {
@@ -57,10 +71,12 @@ function startArchitectRefresh(viewpoint = "") {
     status: "running", phase: "starting", startedAt, heartbeatAt: startedAt, finishedAt: null,
     attempt: 0, activityCount: 0, detail: null, result: null, error: null,
   };
+  persistArchitectState();
   architectJob = runArchitect({ refresh: true, viewpoint, onProgress: architectProgress })
     .then((result) => {
       const finishedAt = new Date().toISOString();
       architectState = { ...architectState, status: "done", phase: "done", heartbeatAt: finishedAt, finishedAt, result, error: null, detail: null };
+      persistArchitectState();
     })
     .catch((error) => {
       const finishedAt = new Date().toISOString();
@@ -68,6 +84,7 @@ function startArchitectRefresh(viewpoint = "") {
         ...architectState, status: "failed", phase: "failed", heartbeatAt: finishedAt, finishedAt,
         result: error?.audit || null, error: String(error?.message || error).slice(0, 500), detail: architectState.detail,
       };
+      persistArchitectState();
     })
     .finally(() => { architectJob = null; });
   return true;

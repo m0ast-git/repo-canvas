@@ -189,7 +189,9 @@ try {
   const status = await request(canvasPort, token, "/api/update/status?refresh=1");
   assert.equal(status.status, 200, status.text);
   assert.equal(status.json.currentVersion, targetVersion);
-  assert.equal(status.json.status, "current");
+  assert.equal(status.json.status, "updated");
+  assert.equal(status.json.fromVersion, "0.0.1");
+  assert.ok(Date.parse(status.json.finishedAt));
   const pointerFile = path.join(root, ".repo-canvas", "runtime", "current.json");
   const updateState = fs.readFileSync(updateStateFile, "utf8");
   assert.equal(JSON.parse(updateState).status, "updated", updateState);
