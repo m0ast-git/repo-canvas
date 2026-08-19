@@ -7,7 +7,7 @@ function sleepSync(milliseconds) {
 
 export function replaceFileSync(source, target, {
   rename,
-  attempts = 8,
+  attempts = 16,
   wait = sleepSync,
 } = {}) {
   if (typeof rename !== "function") throw new Error("replaceFileSync requires a rename function");
@@ -17,7 +17,7 @@ export function replaceFileSync(source, target, {
       return;
     } catch (error) {
       if (!RETRYABLE_REPLACE_ERRORS.has(error?.code) || attempt >= attempts - 1) throw error;
-      wait(Math.min(160, 10 * (2 ** attempt)));
+      wait(Math.min(500, 10 * (2 ** attempt)));
     }
   }
 }

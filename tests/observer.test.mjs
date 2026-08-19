@@ -432,6 +432,16 @@ test("observer state stays compact and atomic replacement retries transient Wind
   assert.equal(attempts, 4);
   assert.deepEqual(waits, [10, 20, 40]);
 
+  let longLockAttempts = 0;
+  runtime.replaceFileSync("temporary-directory", "version-directory", {
+    rename: () => {
+      longLockAttempts += 1;
+      if (longLockAttempts < 11) throw Object.assign(new Error("indexer lock"), { code: "EPERM" });
+    },
+    wait: () => {},
+  });
+  assert.equal(longLockAttempts, 11, "runtime directory promotion must outlast a short Windows indexer lock");
+
   const architectStatus = { status: "running", phase: "reviewing", startedAt: "2026-08-19T10:00:00.000Z" };
   runtime.writeArchitectState(architectStatus);
   assert.deepEqual(runtime.readArchitectState(), architectStatus);

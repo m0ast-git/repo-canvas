@@ -16,7 +16,7 @@ Install this project-visualization tool in the current repository, build the ini
 The agent will follow [`INSTALL_WITH_AGENT.txt`](INSTALL_WITH_AGENT.txt). The exact commands are:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.11.1
+npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.11.2
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```
@@ -85,12 +85,12 @@ From v0.8.6 onward, Canvas checks the public GitHub release feed in the backgrou
 
 ## Offline installation
 
-Download `repo-canvas-0.11.1-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.11.1.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
+Download `repo-canvas-0.11.2-kit.zip` from the [latest release](https://github.com/m0ast-git/repo-canvas/releases/latest). Copy `repo-canvas-0.11.2.tgz` and `INSTALL_WITH_AGENT.txt` into the target repository, then give the text file to a coding agent.
 
 Manual commands:
 
 ```text
-npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.11.1.tgz
+npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.11.2.tgz
 npx --no-install repo-canvas setup
 npm run repo-canvas:start
 ```

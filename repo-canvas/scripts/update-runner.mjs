@@ -119,7 +119,7 @@ async function installRelease(job, tarball, temporaryDirectory, finalDirectory) 
   }
   fs.mkdirSync(path.dirname(finalDirectory), { recursive: true });
   if (fs.existsSync(finalDirectory)) fs.rmSync(temporaryDirectory, { recursive: true, force: true });
-  else fs.renameSync(temporaryDirectory, finalDirectory);
+  else replaceFileSync(temporaryDirectory, finalDirectory, { rename: fs.renameSync });
   return path.join(finalDirectory, "node_modules", "repo-canvas", "repo-canvas", "scripts", "canvas.mjs");
 }
 
