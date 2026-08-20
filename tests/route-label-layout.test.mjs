@@ -13,8 +13,8 @@ function placementBox(placement) {
 }
 
 test("route labels remain bounded at distant zoom", () => {
-  assert.equal(routeLabelScale(.05), 2.6);
-  assert.equal(routeLabelScale(.5), 2);
+  assert.equal(routeLabelScale(.05), 1.45);
+  assert.equal(routeLabelScale(.5), 1.45);
   assert.equal(routeLabelScale(1.4), 1);
 });
 

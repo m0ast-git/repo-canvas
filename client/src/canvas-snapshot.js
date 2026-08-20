@@ -9,6 +9,8 @@ export function patchSnapshotPositions(snapshot, items, revision) {
       y: position.y,
       ...(kind === "area" && Object.hasOwn(position, "width") ? { width: position.width } : {}),
       ...(kind === "area" && Object.hasOwn(position, "height") ? { height: position.height } : {}),
+      ...(kind === "area" && Object.hasOwn(position, "minWidth") ? { minWidth: position.minWidth } : {}),
+      ...(kind === "area" && Object.hasOwn(position, "minHeight") ? { minHeight: position.minHeight } : {}),
       ...(kind === "entity" && Object.hasOwn(position, "areaId") ? { areaId: position.areaId } : {}),
       ...(kind === "entity" && Object.hasOwn(position, "parentId") ? { parentId: position.parentId } : {}),
     };

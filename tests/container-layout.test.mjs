@@ -100,7 +100,10 @@ test("area grid uses the same deterministic slot for preview and commit", () => 
   const commit = packAreaGrid({ areaRect, items, movingId: "moving", dropPoint: { x: 410, y: 300 } });
   assert.deepEqual(preview.slot, commit.slot);
   assert.ok(preview.placements.every((item) => item.y >= areaRect.y + 150 + CONTAINER_PADDING_Y));
-  assert.ok(preview.height >= 400);
+  assert.ok(preview.height < areaRect.height, "automatic packing should remove stale empty space");
+  const expanded = packAreaGrid({ areaRect, items, minimumWidth: 1100, minimumHeight: 760 });
+  assert.equal(expanded.width, 1100);
+  assert.equal(expanded.height, 760);
 });
 
 test("overlapping areas are displaced deterministically without overlap", () => {

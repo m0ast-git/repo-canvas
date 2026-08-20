@@ -137,32 +137,39 @@ export function orderAreaItemsForDrop(items, movingId = "", dropPoint = null) {
   return ordered;
 }
 
-export function packAreaGrid({ areaRect, items, movingId = "", dropPoint = null, headerHeight = AREA_HEADER_HEIGHT }) {
+export function packAreaGrid({
+  areaRect,
+  items,
+  movingId = "",
+  dropPoint = null,
+  headerHeight = AREA_HEADER_HEIGHT,
+  minimumWidth = 0,
+  minimumHeight = 0,
+}) {
   const ordered = orderAreaItemsForDrop(items, movingId, dropPoint);
   const widest = Math.max(0, ...ordered.map((item) => item.rect.width));
-  const width = Math.max(520, widest + CONTAINER_PADDING_X * 2, Number(areaRect.width || 0));
+  const columns = ordered.length ? Math.min(4, Math.max(1, Math.ceil(Math.sqrt(ordered.length * 1.6)))) : 1;
+  const naturalWidth = CONTAINER_PADDING_X * 2 + columns * widest + Math.max(0, columns - 1) * AREA_ITEM_GAP;
+  const width = Math.max(520, naturalWidth, Number(minimumWidth || 0));
   const left = areaRect.x + CONTAINER_PADDING_X;
-  const right = areaRect.x + width - CONTAINER_PADDING_X;
-  let x = left;
   let y = areaRect.y + headerHeight + CONTAINER_PADDING_Y;
-  let rowHeight = 0;
   const placements = [];
-  for (const item of ordered) {
-    if (x > left && x + item.rect.width > right) {
-      x = left;
-      y += rowHeight + AREA_ITEM_GAP;
-      rowHeight = 0;
+  for (let index = 0; index < ordered.length; index += columns) {
+    const row = ordered.slice(index, index + columns);
+    const rowHeight = Math.max(0, ...row.map((item) => item.rect.height));
+    for (let column = 0; column < row.length; column += 1) {
+      const item = row[column];
+      const x = left + column * (widest + AREA_ITEM_GAP);
+      placements.push({ id: item.id, x, y, width: item.rect.width, height: item.rect.height });
     }
-    placements.push({ id: item.id, x, y, width: item.rect.width, height: item.rect.height });
-    x += item.rect.width + AREA_ITEM_GAP;
-    rowHeight = Math.max(rowHeight, item.rect.height);
+    y += rowHeight + AREA_ITEM_GAP;
   }
-  const contentBottom = placements.length ? y + rowHeight : areaRect.y + headerHeight;
+  const contentBottom = placements.length ? y - AREA_ITEM_GAP : areaRect.y + headerHeight;
   return {
     placements,
     slot: placements.find((item) => item.id === movingId) || null,
     width,
-    height: Math.max(260, contentBottom + CONTAINER_PADDING_Y - areaRect.y),
+    height: Math.max(260, contentBottom + CONTAINER_PADDING_Y - areaRect.y, Number(minimumHeight || 0)),
   };
 }
 
@@ -331,7 +338,15 @@ export function compactAreaMembership(snapshot, nodes, context, nextAreaId, init
     const areaRect = areaRects.get(areaId); if (!areaRect) continue;
     const roots = draft.entities.filter((entity) => entity.kind !== "person" && entity.areaId === areaId && (!entity.parentId || byEntity.get(entity.parentId)?.areaId !== areaId));
     const items = roots.map((entity) => ({ id: entity.id, rect: entityStructureBounds(entity.id, byId, hierarchy.descendants, positions) })).filter((item) => item.rect.width && item.rect.height);
-    const packed = packAreaGrid({ areaRect, items, movingId: areaId === nextAreaId ? context.entityId : "", dropPoint: areaId === nextAreaId ? dropPoint : null });
+    const area = draft.areas.find((item) => item.id === areaId);
+    const packed = packAreaGrid({
+      areaRect,
+      items,
+      movingId: areaId === nextAreaId ? context.entityId : "",
+      dropPoint: areaId === nextAreaId ? dropPoint : null,
+      minimumWidth: area?.minWidth,
+      minimumHeight: area?.minHeight,
+    });
     const itemById = new Map(items.map((item) => [item.id, item]));
     for (const placement of packed.placements) {
       const current = itemById.get(placement.id)?.rect; if (!current) continue;

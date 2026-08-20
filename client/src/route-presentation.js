@@ -1,5 +1,9 @@
 export function routesForTier(activityTier, areaRoutes, detailedRoutes) {
-  return activityTier === "area" ? areaRoutes : detailedRoutes;
+  if (activityTier !== "area") return detailedRoutes;
+  // Work is live state, not structural detail. Keep its tether visible at every
+  // zoom level so an active session never disappears from the overview.
+  const workRoutes = detailedRoutes.filter((route) => route.type === "work");
+  return workRoutes.length ? [...areaRoutes, ...workRoutes] : areaRoutes;
 }
 
 export function persistentRouteLabel(route, placement) {

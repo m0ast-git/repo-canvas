@@ -241,10 +241,14 @@ function saveLayout(body) {
         const current = areas.get(id); if (!current) throw new HttpError(404, `Area not found: ${id}`);
         const width = Object.hasOwn(item, "width") ? Number(item.width) : current.width;
         const height = Object.hasOwn(item, "height") ? Number(item.height) : current.height;
+        const minWidth = Object.hasOwn(item, "minWidth") ? Number(item.minWidth) : current.minWidth;
+        const minHeight = Object.hasOwn(item, "minHeight") ? Number(item.minHeight) : current.minHeight;
         if (width !== undefined && (!Number.isFinite(width) || width < 260)) throw new HttpError(400, `Area width must be at least 260 for ${id}`);
         if (height !== undefined && (!Number.isFinite(height) || height < 180)) throw new HttpError(400, `Area height must be at least 180 for ${id}`);
+        if (minWidth !== undefined && (!Number.isFinite(minWidth) || minWidth < 0)) throw new HttpError(400, `Area minimum width must be non-negative for ${id}`);
+        if (minHeight !== undefined && (!Number.isFinite(minHeight) || minHeight < 0)) throw new HttpError(400, `Area minimum height must be non-negative for ${id}`);
         const { actor, updatedAt, ...payload } = current;
-        return createEvent("area.upsert", { actor: "owner", payload: { ...payload, x, y, ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}) } });
+        return createEvent("area.upsert", { actor: "owner", payload: { ...payload, x, y, ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}), ...(minWidth !== undefined ? { minWidth } : {}), ...(minHeight !== undefined ? { minHeight } : {}) } });
       }
       if (kind === "entity") {
         const current = entities.get(id); if (!current) throw new HttpError(404, `Entity not found: ${id}`);

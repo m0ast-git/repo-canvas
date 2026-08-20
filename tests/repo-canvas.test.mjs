@@ -66,6 +66,7 @@ test("saved coordinates do not restart the topology layout generation", () => {
   };
   const initial = layoutFingerprint(snapshot);
   assert.equal(layoutFingerprint({ ...snapshot, revision: 2, entities: [{ ...snapshot.entities[0], x: 900, y: -400 }] }), initial);
+  assert.notEqual(layoutFingerprint({ ...snapshot, areas: [{ id: "core", minWidth: 900, minHeight: 700 }] }), initial);
   assert.notEqual(layoutFingerprint({ ...snapshot, entities: [...snapshot.entities, { id: "db", areaId: "core", kind: "store" }] }), initial);
   assert.notEqual(layoutFingerprint({ ...snapshot, relations: [{ ...snapshot.relations[0], label: "publishes" }] }), initial);
 });
@@ -77,6 +78,12 @@ test("a successful drag patches the local snapshot without waiting for polling",
   assert.deepEqual(patched.entities[0], { id: "api", x: 320, y: -80, parentId: "runtime" });
   assert.equal(patched.areas[0], snapshot.areas[0]);
   assert.equal(snapshot.entities[0].x, 10);
+});
+
+test("manual area size patches its persistent minimum immediately", () => {
+  const snapshot = { revision: 2, areas: [{ id: "core", x: 0, y: 0 }], entities: [], work: [] };
+  const patched = patchSnapshotPositions(snapshot, [{ kind: "area", id: "core", x: 0, y: 0, width: 900, height: 700, minWidth: 900, minHeight: 700 }], 3);
+  assert.deepEqual(patched.areas[0], { id: "core", x: 0, y: 0, width: 900, height: 700, minWidth: 900, minHeight: 700 });
 });
 
 test("libavoid keeps a manually isolated node on a local route", async () => {
@@ -441,7 +448,7 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   const layoutPayload = JSON.stringify({
     canvasRevision: state.json.revision,
     items: [
-      { kind: "area", id: "core", x: 180, y: 220, width: 780, height: 620 },
+      { kind: "area", id: "core", x: 180, y: 220, width: 780, height: 620, minWidth: 780, minHeight: 620 },
       { kind: "entity", id: "module", x: 260, y: 340, parentId: "" },
       { kind: "work", id: "demo", x: 540, y: 360 },
     ],
@@ -458,6 +465,7 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   const movedState = await request(port, { path: "/api/state", headers: authHeaders });
   assert.deepEqual([movedState.json.areas[0].x, movedState.json.areas[0].y], [180, 220]);
   assert.deepEqual([movedState.json.areas[0].width, movedState.json.areas[0].height], [780, 620]);
+  assert.deepEqual([movedState.json.areas[0].minWidth, movedState.json.areas[0].minHeight], [780, 620]);
   const movedModule = movedState.json.entities.find((item) => item.id === "module");
   assert.deepEqual([movedModule.x, movedModule.y], [260, 340]);
   assert.equal(movedModule.parentId, "", "dragging fully outside must detach from its semantic container");

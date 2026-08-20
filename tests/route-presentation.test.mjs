@@ -10,6 +10,12 @@ test("route selection never depends on endpoint viewport visibility", () => {
   assert.equal(routesForTier("entity", areaRoutes, detailedRoutes), detailedRoutes);
 });
 
+test("live work remains connected on the area overview", () => {
+  const areaRoutes = [{ id: "areas", type: "area-relation" }];
+  const detailedRoutes = [{ id: "detail", type: "relation" }, { id: "live", type: "work" }];
+  assert.deepEqual(routesForTier("area", areaRoutes, detailedRoutes).map((route) => route.id), ["areas", "live"]);
+});
+
 test("a relation label stays visible whenever collision placement is safe", () => {
   const route = { label: "передаёт нормализованный поток" };
   assert.equal(persistentRouteLabel(route, { safe: true }), true);

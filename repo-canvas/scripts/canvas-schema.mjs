@@ -117,7 +117,7 @@ export function validateEvent(event) {
     optionalString(errors, payload.ownerNote, "payload.ownerNote", 2000);
     optionalString(errors, payload.color, "payload.color", 32);
     optionalStringList(errors, payload.evidence, "payload.evidence");
-    for (const field of ["x", "y", "width", "height", "order"]) {
+    for (const field of ["x", "y", "width", "height", "minWidth", "minHeight", "order"]) {
       if (payload[field] !== undefined) requireFiniteNumber(errors, payload[field], `payload.${field}`);
     }
   } else if (event.type === "area.remove") {

@@ -7,8 +7,8 @@ export function nodeRect(node) {
   return {
     x: Number(node?.position?.x || 0),
     y: Number(node?.position?.y || 0),
-    width: Math.max(0, Number(node?.style?.width ?? node?.width ?? 0)),
-    height: Math.max(0, Number(node?.style?.height ?? node?.height ?? 0)),
+    width: Math.max(0, Number(node?.width ?? node?.style?.width ?? 0)),
+    height: Math.max(0, Number(node?.height ?? node?.style?.height ?? 0)),
   };
 }
 

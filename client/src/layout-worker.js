@@ -161,7 +161,11 @@ async function layoutAreas(snapshot, areaLayouts, direction) {
       "elk.aspectRatio": "1.45",
       "elk.padding": "[top=90,left=90,bottom=90,right=90]",
     }),
-    children: snapshot.areas.map((area) => ({ id: area.id, width: Math.max(areaLayouts.get(area.id).width, Number(area.width || 0)), height: Math.max(areaLayouts.get(area.id).height, Number(area.height || 0)) })),
+    children: snapshot.areas.map((area) => ({
+      id: area.id,
+      width: Math.max(areaLayouts.get(area.id).width, Number(area.minWidth || 0)),
+      height: Math.max(areaLayouts.get(area.id).height, Number(area.minHeight || 0)),
+    })),
     edges: [...aggregate.entries()].map(([id, item]) => ({ id, sources: [item.from], targets: [item.to] })),
   };
   const result = root.children.length ? await elk.layout(root) : root;
@@ -312,6 +316,28 @@ async function routeScopeOnce(scope) {
   return scope.edges.map((edge) => fromLibavoid.get(edge.id) || localFallback(edge, scope.nodes)).filter(Boolean);
 }
 
+function fitAreasToContents(snapshot, areas, entities) {
+  const byArea = new Map();
+  for (const entity of snapshot.entities) {
+    if (entity.kind === "person") continue;
+    const rect = entities.get(entity.id); if (!rect) continue;
+    if (!byArea.has(entity.areaId)) byArea.set(entity.areaId, []);
+    byArea.get(entity.areaId).push(rect);
+  }
+  for (const area of snapshot.areas) {
+    const rect = areas.get(area.id); if (!rect) continue;
+    const members = byArea.get(area.id) || [];
+    const right = Math.max(rect.x + 520, ...members.map((item) => item.x + item.width + 40));
+    const bottom = Math.max(rect.y + 260, ...members.map((item) => item.y + item.height + 40));
+    const contentWidth = Math.max(520, right - rect.x);
+    const contentHeight = Math.max(260, bottom - rect.y);
+    rect.contentWidth = contentWidth;
+    rect.contentHeight = contentHeight;
+    rect.width = Math.max(contentWidth, Number(area.minWidth || 0));
+    rect.height = Math.max(contentHeight, Number(area.minHeight || 0));
+  }
+}
+
 function createRegistry() {
   return new RoutingRegistry({
     createSession: async (graph) => {
@@ -456,7 +482,7 @@ async function calculate(snapshot, revision, emitPartial) {
   for (const area of snapshot.areas) {
     const areaRect = areas.get(area.id); const local = areaLayouts.get(area.id); if (!areaRect) continue;
     if (Number.isFinite(Number(area.x)) && Number.isFinite(Number(area.y))) { areaRect.x = Number(area.x); areaRect.y = Number(area.y); }
-    areaRect.width = Math.max(areaRect.width, Number(area.width || 0)); areaRect.height = Math.max(areaRect.height, Number(area.height || 0));
+    areaRect.width = Math.max(areaRect.width, Number(area.minWidth || 0)); areaRect.height = Math.max(areaRect.height, Number(area.minHeight || 0));
     for (const [id, rect] of local.entities) {
       const absolute = { ...rect, x: areaRect.x + rect.x, y: areaRect.y + rect.y };
       defaultEntities.set(id, { ...absolute });
@@ -466,6 +492,7 @@ async function calculate(snapshot, revision, emitPartial) {
     }
   }
   entities = normalizeStoredEntityPositions(snapshot, entities, defaultEntities, areas);
+  fitAreasToContents(snapshot, areas, entities);
   for (const [id, rect] of placePeople(snapshot, areas, entities)) entities.set(id, rect);
   const hierarchy = ancestors(snapshot.entities);
   const work = workPositions(snapshot, entities, areas);

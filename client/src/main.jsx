@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Background, BaseEdge, EdgeLabelRenderer, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider,
+  Background, BaseEdge, EdgeLabelRenderer, Handle, MarkerType, NodeResizeControl, Position, ReactFlow, ReactFlowProvider,
   applyNodeChanges, useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -19,7 +19,7 @@ import { currentWork, graphHierarchy, graphItemMoveIds } from "./graph-contract.
 import { layoutFingerprint } from "./layout-fingerprint.js";
 import {
   buildSearchItems, focusForSelection, offscreenChip, relationIds, routeMatchesFocus,
-  routeSelection, screenTextReadable, searchCanvas, selectionKey,
+  routeSelection, searchCanvas, selectionKey,
 } from "./interaction-model.js";
 import { placeRouteLabels } from "./route-label-layout.js";
 import { persistentRouteLabel, routesForTier, sharedTrunkRoutes } from "./route-presentation.js";
@@ -81,29 +81,30 @@ function followMovedNodes(route, baseRects, currentRects) {
 
 const HiddenHandles = () => <><Handle type="target" position={Position.Left} className="hidden-handle" /><Handle type="source" position={Position.Right} className="hidden-handle" /></>;
 
-const AreaNode = memo(({ data }) => <section className={`area-node ${data.distant ? "is-distant" : ""} ${data.activeCount ? "is-active" : ""} ${data.muted ? "is-muted" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""} ${data.dragTarget ? "is-drop-target" : ""}`} style={{ "--area-color": data.color, "--area-stroke-scale": data.labelScale || 1 }}>
+const AreaNode = memo(({ data }) => <section className={`area-node ${data.distant ? "is-distant" : ""} ${data.activeCount ? "is-active" : ""} ${data.muted ? "is-muted" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""} ${data.dragTarget ? "is-drop-target" : ""} ${data.selected ? "is-selected" : ""}`} style={{ "--area-color": data.color, "--area-stroke-scale": data.labelScale || 1 }}>
   <HiddenHandles />
-  <header className="graph-item-body" title="Перетащите область · двойной клик: изменить текст" onClick={(event) => { event.stopPropagation(); data.select(data.area); }} onDoubleClick={(event) => { event.stopPropagation(); data.edit("area", data.area.id, data.title, data.description); }} style={{ transform: `scale(${data.labelScale || 1})` }}><span className="map-drag-handle">⠿</span><small>ОБЛАСТЬ ПРОЕКТА</small><h2>{data.title}</h2><p>{data.description}</p>{data.activeCount > 0 && <b>{data.activeCount} {data.activeCount === 1 ? "работа" : "работы"}</b>}</header>
+  <header className="graph-item-body" aria-label={`${data.title}. Перетащите область; двойной клик изменяет текст`} onClick={(event) => { event.stopPropagation(); data.select(data.area); }} onDoubleClick={(event) => { event.stopPropagation(); data.edit("area", data.area.id, data.title, data.description); }} style={{ transform: `scale(${data.labelScale || 1})` }}><span className="map-drag-handle">⠿</span><small>ОБЛАСТЬ ПРОЕКТА</small><h2>{data.title}</h2><p>{data.description}</p>{data.activeCount > 0 && <b>{data.activeCount} {data.activeCount === 1 ? "работа" : "работы"}</b>}</header>
+  <NodeResizeControl position="bottom-right" className="area-resize-control nodrag nopan" minWidth={data.contentWidth} minHeight={data.contentHeight} onResizeStart={(_, params) => data.resizeStart(data.area, params)} onResizeEnd={(_, params) => data.resizeEnd(data.area, params)}><span aria-hidden="true"></span></NodeResizeControl>
 </section>);
 
 const GroupNode = memo(({ data }) => <section className={`group-node ${data.activeCount ? "is-active" : ""} ${data.muted ? "is-muted" : ""} ${data.dragTarget ? "is-drop-target" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""}`} style={{ "--area-color": data.color }}>
   <HiddenHandles />
   <i className="group-contour" aria-hidden="true" style={{ left: data.contour?.left || 0, top: data.contour?.top || 0, width: data.contour?.width || "100%", height: data.contour?.height || "100%" }}></i>
-  <header className="graph-item-body" style={{ left: data.contour?.left || 0, top: data.contour?.top || 0, width: data.contour?.width || "100%", minHeight: data.headerHeight }} onClick={(event) => { event.stopPropagation(); data.select(data.entity); }} onDoubleClick={(event) => { event.stopPropagation(); data.edit("entity", data.entity.id, data.label, data.description); }} title="Перетащите блок и всё его содержимое · двойной клик: изменить текст">
+  <header className="graph-item-body" style={{ left: data.contour?.left || 0, top: data.contour?.top || 0, width: data.contour?.width || "100%", minHeight: data.headerHeight }} onClick={(event) => { event.stopPropagation(); data.select(data.entity); }} onDoubleClick={(event) => { event.stopPropagation(); data.edit("entity", data.entity.id, data.label, data.description); }} aria-label={`${data.label}. Перетащите блок и его содержимое; двойной клик изменяет текст`}>
     <span className="map-drag-handle">⠿</span><small>{nodeKinds[data.entity.kind] || "БЛОК"}</small><strong>{data.label}</strong><p>{data.description}</p>{data.activeCount > 0 && <b>{data.activeCount}</b>}
   </header>
 </section>);
 
-const EntityNode = memo(({ data }) => <article className={`entity-node graph-item-body ${data.status || "operational"} ${data.activeCount ? "is-active" : ""} ${data.muted ? "is-muted" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""}`} style={{ "--area-color": data.color }} onClick={(event) => { event.stopPropagation(); data.select(data.entity); }} onDoubleClick={(event) => { event.stopPropagation(); data.edit("entity", data.entity.id, data.label, data.description); }} title="Перетащите элемент · двойной клик: изменить текст">
+const EntityNode = memo(({ data }) => <article className={`entity-node graph-item-body ${data.status || "operational"} ${data.activeCount ? "is-active" : ""} ${data.muted ? "is-muted" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""}`} style={{ "--area-color": data.color }} onClick={(event) => { event.stopPropagation(); data.select(data.entity); }} onDoubleClick={(event) => { event.stopPropagation(); data.edit("entity", data.entity.id, data.label, data.description); }} aria-label={`${data.label}. Перетащите элемент; двойной клик изменяет текст`}>
   <HiddenHandles />
   <span className="map-drag-handle">⠿</span><span>{nodeKinds[data.entity.kind] || "ЭЛЕМЕНТ"}</span><strong>{data.label}</strong><small>{data.description}</small><i></i>{data.activeCount > 0 && <b>{data.activeCount}</b>}
 </article>);
 
-const PersonNode = memo(({ data }) => <button className={`person-node graph-item-body ${data.muted ? "is-muted" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""}`} style={{ "--area-color": data.color }} type="button" onClick={(event) => { event.stopPropagation(); data.select(data.entity); }} onDoubleClick={(event) => { event.stopPropagation(); data.edit("entity", data.entity.id, data.label, data.description); }} title="Участник продукта · перетащите или измените двойным кликом">
+const PersonNode = memo(({ data }) => <button className={`person-node graph-item-body ${data.muted ? "is-muted" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""}`} style={{ "--area-color": data.color }} type="button" onClick={(event) => { event.stopPropagation(); data.select(data.entity); }} onDoubleClick={(event) => { event.stopPropagation(); data.edit("entity", data.entity.id, data.label, data.description); }} aria-label={`${data.label}. Участник продукта`}>
   <HiddenHandles /><span className="person-avatar" aria-hidden="true"><i></i><b></b></span><strong>{data.label}</strong><small>{data.description}</small>
 </button>);
 
-const WorkNode = memo(({ data }) => <button className={`work-node graph-item-body ${data.visible ? "is-readable" : "is-concealed"} ${data.work.status} ${data.work.provisional ? "provisional" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""}`} style={{ "--area-color": data.color }} type="button" onClick={(event) => { event.stopPropagation(); data.select(data.work); }} title={data.work.session ? "Перетащите работу · двойной клик: открыть рабочую сессию" : "Перетащите работу · сессия не привязана"} onDoubleClick={(event) => { event.stopPropagation(); data.open(data.work); }}>
+const WorkNode = memo(({ data }) => <button className={`work-node graph-item-body tier-${data.tier} ${data.work.status} ${data.work.provisional ? "provisional" : ""} ${data.focused ? "is-focus-node" : ""} ${data.focusDim ? "is-focus-dim" : ""}`} style={{ "--area-color": data.color }} type="button" onClick={(event) => { event.stopPropagation(); data.select(data.work); }} aria-label={`${data.work.title}. ${data.work.actor || "agent"}. ${data.work.status}`} onDoubleClick={(event) => { event.stopPropagation(); data.open(data.work); }}>
   <HiddenHandles /><i>✦</i><span><small>{data.work.actor || "agent"} · {data.work.status === "blocked" ? "ЖДЁТ" : data.work.status === "planned" ? "ПЛАН" : "В РАБОТЕ"}</small><strong>{data.work.title}</strong></span>{data.work.session && <b>↗</b>}
 </button>);
 
@@ -113,7 +114,7 @@ const RoutedEdge = memo(({ id, data, markerEnd }) => {
   const bundled = (data.route.relations || []).length > 1;
   return <>
     <BaseEdge id={id} path={path} markerEnd={markerEnd} interactionWidth={32} style={{ stroke: data.route.color, strokeWidth: data.active ? 4.8 : data.route.type === "trunk" ? 4.1 : data.route.type === "area-relation" ? 4.1 : data.route.type === "work" ? 2.6 : 2.25, strokeDasharray: data.route.type === "work" ? "7 7" : data.route.status === "planned" ? "10 8" : undefined, opacity: data.hidden ? 0 : data.muted ? .1 : data.active ? 1 : data.route.type === "trunk" ? Math.min(1, data.opacity + .12) : data.opacity, filter: data.route.type === "work" && !data.hidden ? `drop-shadow(0 0 4px ${data.route.color})` : data.active ? `drop-shadow(0 0 5px ${data.route.color})` : data.route.type === "area-relation" ? `drop-shadow(0 0 2px ${data.route.color})` : undefined }} className={!data.hidden && data.route.type === "work" && data.route.status === "active" ? "animated-route" : ""} />
-    {showLabel && <EdgeLabelRenderer><button type="button" className={`route-label nodrag nopan ${bundled ? "is-bundle" : ""} ${data.pinned ? "is-pinned" : ""}`} style={{ left: placement.x, top: placement.y, width: placement.width, height: placement.height, "--label-scale": placement.scale, "--edge-color": data.route.color, opacity: data.muted ? .12 : 1 }} title={bundled ? `Закрепить все ${data.route.relations.length} связей` : `${data.route.label} · Двойной клик: изменить подпись`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); data.selectRoute(data.route); }} onMouseEnter={(event) => data.keepHover(id, event)} onMouseLeave={data.leaveHover} onDoubleClick={(event) => { event.stopPropagation(); if (data.route.relationId) data.edit("relation", data.route.relationId, data.route.label, ""); }}>{data.route.label}</button></EdgeLabelRenderer>}
+    {showLabel && <EdgeLabelRenderer><button type="button" className={`route-label nodrag nopan ${bundled ? "is-bundle" : ""} ${data.pinned ? "is-pinned" : ""}`} style={{ left: placement.x, top: placement.y, width: placement.width, height: placement.height, "--label-scale": placement.scale, "--edge-color": data.route.color, opacity: data.muted ? .12 : 1 }} aria-label={bundled ? `${data.route.relations.length} связей. Нажмите, чтобы раскрыть` : `${data.route.label}. Двойной клик изменяет подпись`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); data.selectRoute(data.route); }} onMouseEnter={() => data.keepHover(id)} onMouseLeave={data.leaveHover} onDoubleClick={(event) => { event.stopPropagation(); if (data.route.relationId) data.edit("relation", data.route.relationId, data.route.label, ""); }}>{data.route.label}</button></EdgeLabelRenderer>}
   </>;
 });
 
@@ -211,7 +212,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
   const { layout, routes: detailedRoutes, areaRoutes, routeDrag } = useLayout(displaySnapshot); const wrapper = useRef(null); const size = useContainerSize(wrapper); const flow = useReactFlow();
   const fittedOnce = useRef(false);
   const [viewport, setViewport] = useState({ x: 0, y: 0, zoom: .1 }); const viewportFrame = useRef(null); const pendingViewport = useRef(viewport);
-  const [selectedArea, setSelectedArea] = useState("all"); const [selection, setSelection] = useState(null); const [collapsed, setCollapsed] = useState(() => new Set(snapshot.areas.map((area) => area.id))); const [collapsedEntities, setCollapsedEntities] = useState(() => new Set(snapshot.entities.filter((entity) => snapshot.entities.some((child) => child.parentId === entity.id)).map((entity) => entity.id))); const [legend, setLegend] = useState(false); const [edit, setEdit] = useState(null); const [regenerate, setRegenerate] = useState(false); const [viewpoint, setViewpoint] = useState(""); const [dismissedArchitect, setDismissedArchitect] = useState(null); const [nodes, setNodes] = useState([]); const [dragging, setDragging] = useState(false); const [hoveredEdge, setHoveredEdge] = useState(null); const [peek, setPeek] = useState(null); const [searchOpen, setSearchOpen] = useState(false); const [searchQuery, setSearchQuery] = useState(""); const [dropPreview, setDropPreview] = useState(null); const [historyState, setHistoryState] = useState({ undo: 0, redo: 0 }); const drag = useRef(null); const manualPositions = useRef(new Map()); const edgeLeaveTimer = useRef(null); const peekTimer = useRef(null); const peekLeaveTimer = useRef(null); const dragPreviewFrame = useRef(null); const treeRowRefs = useRef(new Map()); const knownAreaIds = useRef(new Set(snapshot.areas.map((area) => area.id))); const searchInput = useRef(null); const revisionRef = useRef(snapshot.revision); const history = useRef({ past: [], future: [] }); const mutationQueue = useRef(Promise.resolve()); const historyBusy = useRef(false); const obstacleCache = useRef([]); const placementCache = useRef(new Map()); const edgeCache = useRef(new Map());
+  const [selectedArea, setSelectedArea] = useState("all"); const [selection, setSelection] = useState(null); const [collapsed, setCollapsed] = useState(() => new Set(snapshot.areas.map((area) => area.id))); const [collapsedEntities, setCollapsedEntities] = useState(() => new Set(snapshot.entities.filter((entity) => snapshot.entities.some((child) => child.parentId === entity.id)).map((entity) => entity.id))); const [legend, setLegend] = useState(false); const [edit, setEdit] = useState(null); const [regenerate, setRegenerate] = useState(false); const [viewpoint, setViewpoint] = useState(""); const [dismissedArchitect, setDismissedArchitect] = useState(null); const [nodes, setNodes] = useState([]); const [dragging, setDragging] = useState(false); const [hoveredEdge, setHoveredEdge] = useState(null); const [searchOpen, setSearchOpen] = useState(false); const [searchQuery, setSearchQuery] = useState(""); const [dropPreview, setDropPreview] = useState(null); const [historyState, setHistoryState] = useState({ undo: 0, redo: 0 }); const drag = useRef(null); const manualPositions = useRef(new Map()); const manualAreaMinimums = useRef(new Map()); const edgeLeaveTimer = useRef(null); const resizeStart = useRef(new Map()); const dragPreviewFrame = useRef(null); const treeRowRefs = useRef(new Map()); const knownAreaIds = useRef(new Set(snapshot.areas.map((area) => area.id))); const searchInput = useRef(null); const revisionRef = useRef(snapshot.revision); const history = useRef({ past: [], future: [] }); const mutationQueue = useRef(Promise.resolve()); const historyBusy = useRef(false); const obstacleCache = useRef([]); const placementCache = useRef(new Map()); const edgeCache = useRef(new Map());
   const activityTier = viewport.zoom < NODE_READABLE_ZOOM ? "area" : viewport.zoom < WORK_READABLE_ZOOM ? "entity" : "work";
   const hierarchy = useMemo(() => graphHierarchy(snapshot).descendants, [snapshot.entities]); const activity = useMemo(() => activeRollup(displaySnapshot), [displaySnapshot]);
   const areaMap = useMemo(() => new Map(snapshot.areas.map((area) => [area.id, area])), [snapshot]); const entityMap = useMemo(() => new Map(snapshot.entities.map((entity) => [entity.id, entity])), [snapshot]);
@@ -241,7 +242,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
   const selectWork = useCallback((work) => { if (work) setSelection({ kind: "work", id: work.id, work }); }, []);
   const selectRoute = useCallback((route, relationId = "") => { if (route) setSelection(routeSelection(route, relationId)); }, []);
 
-  useEffect(() => () => { clearTimeout(edgeLeaveTimer.current); clearTimeout(peekTimer.current); clearTimeout(peekLeaveTimer.current); cancelAnimationFrame(dragPreviewFrame.current); }, []);
+  useEffect(() => () => { clearTimeout(edgeLeaveTimer.current); cancelAnimationFrame(dragPreviewFrame.current); }, []);
   useEffect(() => { const incoming = new Set(snapshot.areas.map((area) => area.id)); const added = [...incoming].filter((id) => !knownAreaIds.current.has(id)); if (added.length || [...knownAreaIds.current].some((id) => !incoming.has(id))) setCollapsed((current) => { const next = new Set([...current].filter((id) => incoming.has(id))); for (const id of added) next.add(id); return next; }); knownAreaIds.current = incoming; }, [snapshot.areas]);
 
   useEffect(() => { revisionRef.current = snapshot.revision; }, [snapshot.revision]);
@@ -263,22 +264,48 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     throw new Error("Canvas changed repeatedly while saving the position");
   }, [setSnapshot]);
   const openEdit = useCallback((kind, id, title, description = "") => setEdit({ kind, id, title, description, original: { title, description } }), []);
-  const hidePeek = useCallback((immediate = false) => {
-    clearTimeout(peekTimer.current); clearTimeout(peekLeaveTimer.current);
-    if (immediate) setPeek(null); else peekLeaveTimer.current = setTimeout(() => setPeek(null), 90);
-  }, []);
-  const keepPeek = useCallback(() => clearTimeout(peekLeaveTimer.current), []);
-  const schedulePeek = useCallback((target, event, kind = "entity") => {
-    clearTimeout(peekTimer.current); clearTimeout(peekLeaveTimer.current);
-    if (dragging || screenTextReadable(viewport.zoom, kind, kind === "route" ? 10 : 12)) return;
-    const rect = wrapper.current?.getBoundingClientRect(); if (!rect) return;
-    const x = Math.max(18, Math.min(rect.width - 18, event.clientX - rect.left));
-    const y = Math.max(18, Math.min(rect.height - 18, event.clientY - rect.top));
-    peekTimer.current = setTimeout(() => setPeek({ ...target, x, y, key: target.kind === "route" ? `route:${target.route.id}` : `${target.kind}:${target.id}` }), 450);
-  }, [dragging, viewport.zoom]);
-  const keepEdgeHover = useCallback((id, event) => { clearTimeout(edgeLeaveTimer.current); setHoveredEdge(id); const route = routeById.get(id); if (route && event) schedulePeek({ kind: "route", route }, event, "route"); }, [routeById, schedulePeek]);
-  const leaveEdgeHover = useCallback(() => { hidePeek(); clearTimeout(edgeLeaveTimer.current); edgeLeaveTimer.current = setTimeout(() => setHoveredEdge(null), 90); }, [hidePeek]);
+  const keepEdgeHover = useCallback((id) => { clearTimeout(edgeLeaveTimer.current); setHoveredEdge(id); }, []);
+  const leaveEdgeHover = useCallback(() => { clearTimeout(edgeLeaveTimer.current); edgeLeaveTimer.current = setTimeout(() => setHoveredEdge(null), 90); }, []);
   const openWork = useCallback(async (work) => { if (!work.session) return toast("К этой работе не привязана сессия агента.", true); try { const response = await api("/api/sessions/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workId: work.id, canvasRevision: snapshot.revision }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); if (result.outcome === "resume") { await navigator.clipboard.writeText(result.command).catch(() => {}); toast(`${result.label}: команда resume скопирована — ${result.command}`); } else toast(result.outcome === "surface-opened" ? "Открыта рабочая поверхность агента." : `${result.label}: открываю рабочую сессию.`); } catch (error) { toast(error.message, true); } }, [snapshot.revision, toast]);
+  const onAreaResizeStart = useCallback((area, params) => {
+    const node = flow.getNode(`area:${area.id}`); if (!node) return;
+    const rect = nodeRect(node);
+    resizeStart.current.set(area.id, {
+      kind: "area", id: area.id,
+      x: Number(params?.x ?? rect.x), y: Number(params?.y ?? rect.y),
+      width: rect.width, height: rect.height,
+      minWidth: Number(area.minWidth || 0), minHeight: Number(area.minHeight || 0),
+    });
+    setSelection({ kind: "area", id: area.id });
+    setDragging(true);
+  }, [flow]);
+  const onAreaResizeEnd = useCallback(async (area, params) => {
+    setDragging(false);
+    const node = flow.getNode(`area:${area.id}`); const layoutRect = layoutAreas.get(area.id);
+    if (!node || !layoutRect) return;
+    const baseline = resizeStart.current.get(area.id) || {
+      kind: "area", id: area.id, x: node.position.x, y: node.position.y,
+      width: nodeRect(node).width, height: nodeRect(node).height,
+      minWidth: Number(area.minWidth || 0), minHeight: Number(area.minHeight || 0),
+    };
+    resizeStart.current.delete(area.id);
+    const width = Math.max(Number(layoutRect.contentWidth || 520), Number(params?.width || baseline.width));
+    const height = Math.max(Number(layoutRect.contentHeight || 260), Number(params?.height || baseline.height));
+    const after = { kind: "area", id: area.id, x: Number(params?.x ?? baseline.x), y: Number(params?.y ?? baseline.y), width, height, minWidth: width, minHeight: height };
+    if (Math.abs(width - baseline.width) < .5 && Math.abs(height - baseline.height) < .5) return;
+    manualAreaMinimums.current.set(area.id, { minWidth: width, minHeight: height });
+    setNodes((current) => current.map((item) => item.id === `area:${area.id}` ? { ...item, width, height, style: { ...item.style, width, height } } : item));
+    routeDrag([{ id: `area:${area.id}`, x: after.x, y: after.y }], true, true);
+    try {
+      await enqueueMutation(() => persistLayout([after]));
+      remember({ type: "layout", label: "изменение размера области", before: [baseline], after: [after] });
+      toast("Размер области сохранён");
+    } catch (error) {
+      manualAreaMinimums.current.set(area.id, { minWidth: baseline.minWidth, minHeight: baseline.minHeight });
+      setNodes((current) => current.map((item) => item.id === `area:${area.id}` ? { ...item, width: baseline.width, height: baseline.height, style: { ...item.style, width: baseline.width, height: baseline.height } } : item));
+      toast(error.message, true);
+    }
+  }, [enqueueMutation, flow, layoutAreas, persistLayout, remember, routeDrag, toast]);
 
   const projectedNodes = useMemo(() => {
     if (!layout) return null;
@@ -290,7 +317,11 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     });
     const output = snapshot.areas.map((area) => {
       const rect = layoutAreas.get(area.id); const id = `area:${area.id}`; const manual = manualPositions.current.get(id);
-      return rect && { id, type: "area", className: "area-shell", dragHandle: ".graph-item-body", position: manual || { x: rect.x, y: rect.y }, width: rect.width, height: rect.height, draggable: true, selectable: false, zIndex: 0, style: { width: rect.width, height: rect.height }, data: { area, title: area.ownerTitle || area.title, description: area.ownerNote || area.note || "Смысловая граница ответственности", color: rect.color, distant, activeCount: distant ? activity.areas.get(area.id) || 0 : 0, labelScale: 1, muted: selectedArea !== "all" && selectedArea !== area.id, edit: openEdit, select: selectArea, ...focusData(id) } };
+      if (!rect) return null;
+      const minimum = manualAreaMinimums.current.get(area.id);
+      const width = minimum ? Math.max(Number(rect.contentWidth || 520), Number(minimum.minWidth || 0)) : rect.width;
+      const height = minimum ? Math.max(Number(rect.contentHeight || 260), Number(minimum.minHeight || 0)) : rect.height;
+      return { id, type: "area", className: "area-shell", dragHandle: ".graph-item-body", position: manual || { x: rect.x, y: rect.y }, width, height, draggable: true, selectable: false, zIndex: 0, style: { width, height }, data: { area, title: area.ownerTitle || area.title, description: area.ownerNote || area.note || "Смысловая граница ответственности", color: rect.color, distant, activeCount: distant ? activity.areas.get(area.id) || 0 : 0, labelScale: 1, contentWidth: rect.contentWidth || 520, contentHeight: rect.contentHeight || 260, selected: selection?.kind === "area" && selection.id === area.id, muted: selectedArea !== "all" && selectedArea !== area.id, edit: openEdit, select: selectArea, resizeStart: onAreaResizeStart, resizeEnd: onAreaResizeEnd, ...focusData(id) } };
     }).filter(Boolean);
     for (const entity of snapshot.entities) {
       const rect = detailPositions.get(entity.id); if (!rect) continue; const id = `entity:${entity.id}`; const manual = manualPositions.current.get(id); const person = entity.kind === "person"; const relatedAreas = connectedAreas.get(entity.id) || new Set(); const color = person ? colors.get([...relatedAreas][0]) || "#d88961" : colors.get(entity.areaId);
@@ -298,10 +329,10 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     }
     for (const work of liveWork) {
       const rect = workPositions.get(work.id); if (!rect) continue; const id = `work:${work.id}`; const manual = manualPositions.current.get(id); const first = entityMap.get(work.targets?.[0]);
-      output.push({ id, type: "work", dragHandle: ".graph-item-body", position: manual || { x: rect.x, y: rect.y }, width: rect.width, height: rect.height, draggable: true, selectable: false, zIndex: 20, style: { width: rect.width, height: rect.height }, data: { work, visible: activityTier === "work", color: colors.get(first?.areaId), open: openWork, select: selectWork, ...focusData(id) } });
+      output.push({ id, type: "work", dragHandle: ".graph-item-body", position: manual || { x: rect.x, y: rect.y }, width: rect.width, height: rect.height, draggable: true, selectable: false, zIndex: 20, style: { width: rect.width, height: rect.height }, data: { work, tier: activityTier, color: colors.get(first?.areaId), open: openWork, select: selectWork, ...focusData(id) } });
     }
     return fitGroupContours(output, hierarchy);
-  }, [layout, snapshot, liveWork, activityTier, layoutAreas, detailPositions, workPositions, activity, hierarchy, selectedArea, entityMap, connectedAreas, colors, openEdit, openWork, selectArea, selectEntity, selectWork, selection, visibleFocus, pinnedFocus]);
+  }, [layout, snapshot, liveWork, activityTier, layoutAreas, detailPositions, workPositions, activity, hierarchy, selectedArea, entityMap, connectedAreas, colors, openEdit, openWork, onAreaResizeStart, onAreaResizeEnd, selectArea, selectEntity, selectWork, selection, visibleFocus, pinnedFocus]);
 
   useEffect(() => { if (projectedNodes) setNodes(projectedNodes); }, [projectedNodes]);
   useEffect(() => {
@@ -312,14 +343,14 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
   }, [nodes.length, flow]);
 
   const baseRects = useMemo(() => new Map([...(layout?.areas || []).map((item) => [`area:${item.id}`, item]), ...(layout?.entities || []).map((item) => [`entity:${item.id}`, item]), ...(layout?.work || []).map((item) => [`work:${item.id}`, item])]), [layout]);
-  const currentRects = useMemo(() => new Map(nodes.map((node) => [node.id, { x: node.position.x, y: node.position.y, width: Number(node.style?.width || 0), height: Number(node.style?.height || 0) }])), [nodes]);
+  const currentRects = useMemo(() => new Map(nodes.map((node) => [node.id, nodeRect(node)])), [nodes]);
   const routes = useMemo(() => {
     return routesForTier(activityTier, areaRoutes, detailedRoutes);
   }, [activityTier, areaRoutes, detailedRoutes]);
   const liveRoutes = useMemo(() => { const followed = routes.map((route) => followMovedNodes(route, baseRects, currentRects)); return [...followed, ...sharedTrunkRoutes(followed)]; }, [routes, baseRects, currentRects]);
   const obstacles = useMemo(() => {
     if (dragging && obstacleCache.current.length) return obstacleCache.current;
-    const next = nodes.filter((node) => !node.hidden && (node.type !== "work" || activityTier === "work")).map(dropObstacle);
+    const next = nodes.filter((node) => !node.hidden).map(dropObstacle);
     obstacleCache.current = next; return next;
   }, [nodes, activityTier, dragging]);
   const placements = useMemo(() => {
@@ -330,11 +361,11 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
   const edges = useMemo(() => {
     const nextCache = new Map();
     const output = liveRoutes.map((route) => {
-      const placement = placements.get(route.id); const hidden = route.type === "work" && activityTier !== "work";
+      const placement = placements.get(route.id); const hidden = false;
       const persistentLabel = persistentRouteLabel(route, placement);
       const hovered = hoveredEdge === route.id || Boolean(hoverFocus && routeMatchesFocus(route, hoverFocus));
       const pinned = selection?.kind === "route" && routeMatchesFocus(route, pinnedFocus);
-      const active = hovered || pinned; const opacity = activityTier === "area" ? .82 : activityTier === "entity" ? .68 : .86;
+      const active = hovered || pinned; const opacity = route.type === "work" && activityTier === "area" ? .74 : route.type === "work" && activityTier === "entity" ? .82 : activityTier === "area" ? .82 : activityTier === "entity" ? .68 : .86;
       const mutedByArea = selectedArea !== "all" && route.sourceAreaId !== selectedArea && route.targetAreaId !== selectedArea;
       const muted = mutedByArea || selection?.kind === "route" && !pinned;
       const previous = edgeCache.current.get(route.id);
@@ -347,7 +378,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     edgeCache.current = nextCache; return output;
   }, [liveRoutes, placements, activityTier, selectedArea, hoveredEdge, hoverFocus, selection, pinnedFocus, openEdit, selectRoute, keepEdgeHover, leaveEdgeHover]);
 
-  const onViewportChange = useCallback((next) => { clearTimeout(peekTimer.current); clearTimeout(peekLeaveTimer.current); setPeek(null); pendingViewport.current = next; if (viewportFrame.current !== null) return; viewportFrame.current = requestAnimationFrame(() => { viewportFrame.current = null; setViewport(pendingViewport.current); }); }, []);
+  const onViewportChange = useCallback((next) => { pendingViewport.current = next; if (viewportFrame.current !== null) return; viewportFrame.current = requestAnimationFrame(() => { viewportFrame.current = null; setViewport(pendingViewport.current); }); }, []);
   const settleViewport = useCallback((event, next) => {
     const rect = wrapper.current?.getBoundingClientRect(); const anchor = rect && Number.isFinite(event?.clientX) ? { x: event.clientX - rect.left, y: event.clientY - rect.top } : { x: size.width / 2, y: size.height / 2 };
     const settled = settleViewportTransform(next, size, anchor, devicePixelRatio || 1);
@@ -360,7 +391,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     return safeChanges.length ? applyNodeChanges(safeChanges, current) : current;
   }), []);
   const onNodeDragStart = useCallback((event, node) => {
-    hidePeek(true); setDropPreview(null);
+    setDropPreview(null);
     const affected = graphItemMoveIds(displaySnapshot, node.id, now);
     const byId = new Map(nodes.map((item) => [item.id, item]));
     const positions = new Map(nodes.filter((item) => affected.has(item.id)).map((item) => [item.id, { ...item.position }]));
@@ -390,7 +421,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
       lastTranslation: { dx: 0, dy: 0 }, lastRawTranslation: { dx: 0, dy: 0 }, lastMoves: [],
     };
     setDragging(true);
-  }, [displaySnapshot, entityMap, flow, hidePeek, hierarchy, now, nodes]);
+  }, [displaySnapshot, entityMap, flow, hierarchy, now, nodes]);
   const onNodeDrag = useCallback((event, node) => {
     const context = drag.current; if (!context || context.id !== node.id) return;
     const pointer = pointerPosition(flow, event, node.position);
@@ -494,7 +525,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     for (const move of finalMoves) manualPositions.current.set(move.id, { x: move.x, y: move.y });
     setNodes((current) => fitGroupContours(current.map((item) => {
       const move = finalMap.get(item.id); const data = item.data?.dragTarget ? { ...item.data, dragTarget: false } : item.data;
-      if (move) return { ...item, position: { x: move.x, y: move.y }, style: move.id.startsWith("area:") ? { ...item.style, width: move.width, height: move.height } : item.style, data };
+      if (move) return { ...item, position: { x: move.x, y: move.y }, ...(move.id.startsWith("area:") ? { width: move.width, height: move.height, style: { ...item.style, width: move.width, height: move.height } } : {}), data };
       return item.data?.dragTarget ? { ...item, data } : item;
     }), nextHierarchy));
     const parentChanged = nextParentId !== context.originalParentId; const areaChanged = nextAreaId !== context.originalAreaId;
@@ -507,7 +538,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     } catch (error) {
       const beforeMap = new Map(beforeMoves.map((move) => [move.id, move]));
       for (const move of beforeMoves) manualPositions.current.set(move.id, { x: move.x, y: move.y });
-      setNodes((current) => fitGroupContours(current.map((item) => beforeMap.has(item.id) ? { ...item, position: { x: beforeMap.get(item.id).x, y: beforeMap.get(item.id).y }, style: item.type === "area" ? { ...item.style, width: beforeMap.get(item.id).width, height: beforeMap.get(item.id).height } : item.style, data: item.data?.dragTarget ? { ...item.data, dragTarget: false } : item.data } : item.data?.dragTarget ? { ...item, data: { ...item.data, dragTarget: false } } : item), hierarchy));
+      setNodes((current) => fitGroupContours(current.map((item) => beforeMap.has(item.id) ? { ...item, position: { x: beforeMap.get(item.id).x, y: beforeMap.get(item.id).y }, ...(item.type === "area" ? { width: beforeMap.get(item.id).width, height: beforeMap.get(item.id).height, style: { ...item.style, width: beforeMap.get(item.id).width, height: beforeMap.get(item.id).height } } : {}), data: item.data?.dragTarget ? { ...item.data, dragTarget: false } : item.data } : item.data?.dragTarget ? { ...item, data: { ...item.data, dragTarget: false } } : item), hierarchy));
       routeDrag(beforeMoves, true, parentChanged || areaChanged);
       toast(error.message, true);
     }
@@ -517,33 +548,39 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     if (historyBusy.current) return;
     const from = direction === "undo" ? history.current.past : history.current.future; const to = direction === "undo" ? history.current.future : history.current.past; const entry = from.at(-1);
     if (!entry) return;
+    const values = direction === "undo" ? entry.before : entry.after;
+    const rollbackValues = direction === "undo" ? entry.after : entry.before;
+    const beforeParents = new Map((entry.before || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "parentId")).map((value) => [value.id, value.parentId || ""]));
+    const afterParents = new Map((entry.after || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "parentId")).map((value) => [value.id, value.parentId || ""]));
+    const beforeAreas = new Map((entry.before || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "areaId")).map((value) => [value.id, value.areaId || ""]));
+    const afterAreas = new Map((entry.after || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "areaId")).map((value) => [value.id, value.areaId || ""]));
+    const structuralMembership = [...new Set([...beforeParents.keys(), ...afterParents.keys(), ...beforeAreas.keys(), ...afterAreas.keys()])].some((id) => beforeParents.get(id) !== afterParents.get(id) || beforeAreas.get(id) !== afterAreas.get(id));
+    const structuralSize = (entry.before || []).some((value, index) => value.kind === "area" && ["width", "height", "minWidth", "minHeight"].some((field) => value[field] !== entry.after?.[index]?.[field]));
+    const applyLayoutValues = (layoutValues) => {
+      for (const value of layoutValues) {
+        manualPositions.current.set(`${value.kind}:${value.id}`, { x: value.x, y: value.y });
+        if (value.kind === "area" && (Object.hasOwn(value, "minWidth") || Object.hasOwn(value, "minHeight"))) manualAreaMinimums.current.set(value.id, { minWidth: Number(value.minWidth || 0), minHeight: Number(value.minHeight || 0) });
+      }
+      const valueMap = new Map(layoutValues.map((item) => [`${item.kind}:${item.id}`, item]));
+      const historyHierarchy = hierarchyWithLayoutItems(displaySnapshot, layoutValues);
+      setNodes((current) => fitGroupContours(current.map((node) => { const value = valueMap.get(node.id); if (!value) return node; const width = value.width ?? nodeRect(node).width; const height = value.height ?? nodeRect(node).height; return { ...node, position: { x: value.x, y: value.y }, ...(node.type === "area" ? { width, height, style: { ...node.style, width, height } } : {}) }; }), historyHierarchy));
+      routeDrag(layoutValues.map((value) => ({ id: `${value.kind}:${value.id}`, x: value.x, y: value.y })), true, structuralMembership || structuralSize);
+    };
     historyBusy.current = true;
+    if (entry.type === "layout") applyLayoutValues(values);
     try {
-      const values = direction === "undo" ? entry.before : entry.after;
       await enqueueMutation(async () => {
         if (entry.type === "layout") return persistLayout(values);
         const path = "/api/rename";
         const body = { canvasRevision: revisionRef.current, kind: entry.kind, id: entry.id, values };
         const response = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); revisionRef.current = result.revision;
       });
-      if (entry.type === "layout") {
-        for (const value of values) manualPositions.current.set(`${value.kind}:${value.id}`, { x: value.x, y: value.y });
-        const valueMap = new Map(values.map((item) => [`${item.kind}:${item.id}`, item]));
-        const historyHierarchy = hierarchyWithLayoutItems(displaySnapshot, values);
-        setNodes((current) => fitGroupContours(current.map((node) => { const value = valueMap.get(node.id); return value ? { ...node, position: { x: value.x, y: value.y }, style: node.type === "area" ? { ...node.style, width: value.width ?? node.style?.width, height: value.height ?? node.style?.height } : node.style } : node; }), historyHierarchy));
-        const beforeParents = new Map((entry.before || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "parentId")).map((value) => [value.id, value.parentId || ""]));
-        const afterParents = new Map((entry.after || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "parentId")).map((value) => [value.id, value.parentId || ""]));
-        const beforeAreas = new Map((entry.before || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "areaId")).map((value) => [value.id, value.areaId || ""]));
-        const afterAreas = new Map((entry.after || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "areaId")).map((value) => [value.id, value.areaId || ""]));
-        const structural = [...new Set([...beforeParents.keys(), ...afterParents.keys(), ...beforeAreas.keys(), ...afterAreas.keys()])].some((id) => beforeParents.get(id) !== afterParents.get(id) || beforeAreas.get(id) !== afterAreas.get(id));
-        routeDrag(values.map((value) => ({ id: `${value.kind}:${value.id}`, x: value.x, y: value.y })), true, structural);
-      }
       from.pop(); to.push(entry); syncHistory(); if (entry.type !== "layout") await refreshSnapshot(); toast(`${direction === "undo" ? "Отменено" : "Повторено"}: ${entry.label}`);
-    } catch (error) { toast(error.message, true); }
+    } catch (error) { if (entry.type === "layout") applyLayoutValues(rollbackValues); toast(error.message, true); }
     finally { historyBusy.current = false; }
   }, [displaySnapshot, enqueueMutation, persistLayout, refreshSnapshot, routeDrag, syncHistory, toast]);
 
-  const fitAll = useCallback(() => { setSelectedArea("all"); setSelection(null); hidePeek(true); requestAnimationFrame(() => flow.fitView({ padding: .1, duration: 450, maxZoom: 1.05 })); }, [flow, hidePeek]);
+  const fitAll = useCallback(() => { setSelectedArea("all"); setSelection(null); requestAnimationFrame(() => flow.fitView({ padding: .1, duration: 450, maxZoom: 1.05 })); }, [flow]);
   const focusArea = useCallback((id) => { setSelectedArea(id); selectArea(areaMap.get(id)); const ids = [`area:${id}`, ...snapshot.entities.filter((item) => item.areaId === id || item.kind === "person" && connectedAreas.get(item.id)?.has(id)).map((item) => `entity:${item.id}`)]; requestAnimationFrame(() => flow.fitView({ nodes: nodes.filter((node) => ids.includes(node.id)), padding: .13, duration: 450, maxZoom: 1.1 })); }, [flow, snapshot.entities, connectedAreas, nodes, selectArea, areaMap]);
   const focusPerson = useCallback((person) => {
     selectEntity(person);
@@ -556,7 +593,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
   }, [flow, snapshot.relations, nodes, selectEntity]);
 
   async function saveEdit(event) { event.preventDefault(); const title = edit.title.trim(); const description = edit.description.trim(); if (!title) return; const values = { title, ...(edit.kind === "relation" ? {} : { description }) }; const before = { title: edit.original.title, ...(edit.kind === "relation" ? {} : { description: edit.original.description }) }; try { await enqueueMutation(async () => { const response = await api("/api/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ canvasRevision: revisionRef.current, kind: edit.kind, id: edit.id, values }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); revisionRef.current = result.revision; }); remember({ type: "rename", label: edit.kind === "relation" ? "изменение подписи связи" : "переименование", kind: edit.kind, id: edit.id, before, after: values }); setEdit(null); toast(edit.kind === "relation" ? "Подпись связи сохранена" : "Название и описание сохранены"); } catch (error) { toast(error.message, true); } }
-  async function runRegenerate() { try { manualPositions.current.clear(); const response = await api("/api/architect/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ viewpoint }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); setArchitect(result); setDismissedArchitect(null); setRegenerate(false); toast(result.started ? "Повторная генерация запущена" : "Architect уже работает"); } catch (error) { toast(error.message, true); } }
+  async function runRegenerate() { try { manualPositions.current.clear(); manualAreaMinimums.current.clear(); const response = await api("/api/architect/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ viewpoint }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); setArchitect(result); setDismissedArchitect(null); setRegenerate(false); toast(result.started ? "Повторная генерация запущена" : "Architect уже работает"); } catch (error) { toast(error.message, true); } }
 
   useEffect(() => {
     const handler = (event) => {
@@ -568,11 +605,10 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
       if (edit) { event.preventDefault(); setEdit(null); return; }
       if (regenerate) { event.preventDefault(); setRegenerate(false); return; }
       if (searchOpen) { event.preventDefault(); setSearchOpen(false); setSearchQuery(""); return; }
-      if (peek) { event.preventDefault(); hidePeek(true); return; }
       if (selection) { event.preventDefault(); setSelection(null); }
     };
     addEventListener("keydown", handler); return () => removeEventListener("keydown", handler);
-  }, [edit, regenerate, searchOpen, peek, selection, hidePeek]);
+  }, [edit, regenerate, searchOpen, selection]);
   useEffect(() => { if (searchOpen) requestAnimationFrame(() => searchInput.current?.focus()); }, [searchOpen]);
 
   useEffect(() => { const handler = (event) => { const modifier = event.ctrlKey || event.metaKey; if (!modifier || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target?.tagName) || event.target?.isContentEditable) return; const undo = event.key.toLowerCase() === "z" && !event.shiftKey; const redo = event.key.toLowerCase() === "y" || event.key.toLowerCase() === "z" && event.shiftKey; if (!undo && !redo) return; event.preventDefault(); runHistory(undo ? "undo" : "redo"); }; addEventListener("keydown", handler); return () => removeEventListener("keydown", handler); }, [runHistory]);
@@ -615,9 +651,6 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     const allIds = [...pinnedFocus.nodeIds]; const entityIds = allIds.filter((id) => id.startsWith("entity:")); const candidates = entityIds.length ? entityIds : allIds;
     return candidates.map((id) => { const rect = currentRects.get(id); const chip = offscreenChip(viewport, size, rect); if (!chip) return null; const raw = id.replace(/^[^:]+:/, ""); const label = id.startsWith("area:") ? areaMap.get(raw)?.ownerTitle || areaMap.get(raw)?.title : entityMap.get(raw)?.ownerLabel || entityMap.get(raw)?.label; return { id, label: label || raw, ...chip }; }).filter(Boolean).slice(0, 6);
   }, [selection, pinnedFocus, currentRects, viewport, size, areaMap, entityMap]);
-  const peekEntity = peek?.kind === "entity" ? entityMap.get(peek.id) : null;
-  const peekArea = peek?.kind === "area" ? areaMap.get(peek.id) : null;
-  const peekWork = peek?.kind === "work" ? liveWork.find((work) => work.id === peek.id) : null;
   const architectKey = architect?.finishedAt || architect?.startedAt;
   const showArchitect = architect && architect.status !== "idle" && architectKey !== dismissedArchitect;
   const architectConnected = architect?.heartbeatAt && Date.now() - Date.parse(architect.heartbeatAt) < 20_000;
@@ -636,12 +669,11 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
     </aside><section className="canvas-shell"><header className="canvas-header"><span><small>{activityTier === "area" ? "АКТИВНЫЕ ОБЛАСТИ" : activityTier === "entity" ? "АКТИВНЫЕ БЛОКИ" : "ТЕКУЩИЕ ПРОЦЕССЫ"}</small><h1>{selectedArea === "all" ? "Весь проект" : areaMap.get(selectedArea)?.ownerTitle || areaMap.get(selectedArea)?.title}</h1></span><nav><button className={`search-action ${searchOpen ? "is-active" : ""}`} aria-label="Поиск · Ctrl+F" title="Поиск · Ctrl+F" onClick={() => setSearchOpen((current) => !current)}>⌕</button><button className="refresh-action" title="Обновить данные" onClick={() => setSnapshot(null)}>↻</button><button className="history-action" title="Отменить · Ctrl+Z" disabled={!historyState.undo} onClick={() => runHistory("undo")}>↶</button><button className="history-action" title="Повторить · Ctrl+Y / Ctrl+Shift+Z" disabled={!historyState.redo} onClick={() => runHistory("redo")}>↷</button><button className={`regenerate-action ${architect?.running ? "is-running" : ""}`} disabled={architect?.running} onClick={() => setRegenerate(true)}>{architect?.running ? "Карта строится…" : "Повторная генерация карты"}</button><button className="theme-action" title={theme === "dark" ? "Светлая тема" : "Тёмная тема"} onClick={toggleTheme}>{theme === "dark" ? "☀" : "◐"}</button><i></i><div className="zoom-tiers" aria-label="Уровень карты"><button className={activityTier === "area" ? "is-active" : ""} onClick={() => zoomToTier("area")}>Области</button><button className={activityTier === "entity" ? "is-active" : ""} onClick={() => zoomToTier("entity")}>Элементы</button><button className={activityTier === "work" ? "is-active" : ""} onClick={() => zoomToTier("work")}>Работа</button></div><button onClick={() => flow.zoomOut({ duration: 180 })}>−</button><button onClick={fitAll}>Показать всё</button><button onClick={() => flow.zoomIn({ duration: 180 })}>+</button><button className={legend ? "is-active" : ""} onClick={() => setLegend(!legend)}>Легенда</button></nav></header>
       {searchOpen && <section className="canvas-search"><label><span>⌕</span><input ref={searchInput} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Найти область, элемент, человека или работу" /></label>{searchQuery && <div>{searchResults.length ? searchResults.map((item) => <button key={`${item.kind}:${item.id}`} onClick={() => activateSearchResult(item)}><small>{item.kind === "area" ? "ОБЛАСТЬ" : item.kind === "work" ? "РАБОТА" : "ЭЛЕМЕНТ"}</small><strong>{item.label}</strong><span>{item.description}</span></button>) : <p>Ничего не найдено</p>}</div>}</section>}
       {showArchitect && <section className={`architect-banner ${architect.status}`}><i></i><span><small>{architect.status === "running" ? `ARCHITECT · ${Math.max(1, Math.round((architect.elapsedMs || 0) / 1000))} СЕК` : architect.status === "done" ? "КАРТА ОБНОВЛЕНА" : "ГЕНЕРАЦИЯ НЕ ПРИМЕНЕНА"}</small><strong>{architect.status === "running" ? ARCHITECT_PHASES[architect.phase] || "Строим карту проекта" : architect.status === "done" ? "Проверка пройдена" : "Architect остановлен валидатором"}</strong><p>{architectMessage}</p></span>{architect.status === "failed" && <button onClick={() => { setDismissedArchitect(architectKey); setRegenerate(true); }}>Повторить</button>}{architect.status !== "running" && <button className="architect-dismiss" title="Скрыть" onClick={() => setDismissedArchitect(architectKey)}>×</button>}</section>}
-      <div className={`canvas-wrap tier-${activityTier}`} ref={wrapper}><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={onNodesChange} onNodeDragStart={onNodeDragStart} onNodeDrag={onNodeDrag} onNodeDragStop={onNodeDragStop} onNodeMouseEnter={(event, node) => { const kind = node.type === "group" ? "entity" : node.type; const id = node.id.replace(/^[^:]+:/, ""); schedulePeek({ kind, id }, event, node.type); }} onNodeMouseLeave={() => hidePeek()} onEdgeMouseEnter={(event, edge) => keepEdgeHover(edge.id, event)} onEdgeMouseLeave={leaveEdgeHover} onEdgeClick={(event, edge) => { event.stopPropagation(); selectRoute(edge.data?.route); }} onEdgeDoubleClick={(event, edge) => { event.stopPropagation(); if (edge.data?.route?.relationId) openEdit("relation", edge.data.route.relationId, edge.data.route.label, ""); }} onMove={(_, next) => onViewportChange(next)} onMoveEnd={settleViewport} onPaneClick={(event) => { if (!event.target?.classList?.contains("react-flow__pane")) return; setSelection(null); hidePeek(true); }} minZoom={.025} maxZoom={1.7} defaultViewport={{ x: 0, y: 0, zoom: .1 }} onlyRenderVisibleElements panOnDrag selectionOnDrag={false} nodeDragThreshold={2} nodesConnectable={false} edgesReconnectable={false} elevateNodesOnSelect={false} proOptions={{ hideAttribution: true }}><Background variant="dots" gap={28} size={1} color={theme === "dark" ? "#3a332f" : "#eadccf"} /></ReactFlow>
+      <div className={`canvas-wrap tier-${activityTier}`} ref={wrapper}><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={onNodesChange} onNodeDragStart={onNodeDragStart} onNodeDrag={onNodeDrag} onNodeDragStop={onNodeDragStop} onEdgeMouseEnter={(_, edge) => keepEdgeHover(edge.id)} onEdgeMouseLeave={leaveEdgeHover} onEdgeClick={(event, edge) => { event.stopPropagation(); selectRoute(edge.data?.route); }} onEdgeDoubleClick={(event, edge) => { event.stopPropagation(); if (edge.data?.route?.relationId) openEdit("relation", edge.data.route.relationId, edge.data.route.label, ""); }} onMove={(_, next) => onViewportChange(next)} onMoveEnd={settleViewport} onPaneClick={(event) => { if (!event.target?.classList?.contains("react-flow__pane")) return; setSelection(null); }} minZoom={.025} maxZoom={1.7} defaultViewport={{ x: 0, y: 0, zoom: .1 }} onlyRenderVisibleElements panOnDrag selectionOnDrag={false} nodeDragThreshold={2} nodesConnectable={false} edgesReconnectable={false} elevateNodesOnSelect={false} proOptions={{ hideAttribution: true }}><Background variant="dots" gap={28} size={1} color={theme === "dark" ? "#3a332f" : "#eadccf"} /></ReactFlow>
         {dropPreview && <i className="area-drop-preview" aria-hidden="true" style={{ left: dropPreview.rect.x * viewport.zoom + viewport.x, top: dropPreview.rect.y * viewport.zoom + viewport.y, width: dropPreview.rect.width * viewport.zoom, height: dropPreview.rect.height * viewport.zoom, "--area-color": dropPreview.color }}></i>}
-        {peek && <aside className="dwell-peek nodrag nopan" style={{ left: peek.x, top: peek.y, "--edge-color": peek.route?.color }} onMouseEnter={keepPeek} onMouseLeave={() => hidePeek()} onClick={() => { if (peek.kind === "route") selectRoute(peek.route); else if (peek.kind === "entity" && peekEntity) selectEntity(peekEntity); else if (peek.kind === "area" && peekArea) selectArea(peekArea); else if (peek.kind === "work" && peekWork) selectWork(peekWork); hidePeek(true); }}><small>{peek.kind === "route" ? (peek.route.relations || []).length > 1 ? "ПУЧОК СВЯЗЕЙ" : "СВЯЗЬ" : peek.kind === "area" ? "ОБЛАСТЬ" : peek.kind === "work" ? "РАБОТА" : nodeKinds[peekEntity?.kind] || "ЭЛЕМЕНТ"}</small><strong>{peek.kind === "route" ? peek.route.label : peekEntity?.ownerLabel || peekEntity?.label || peekArea?.ownerTitle || peekArea?.title || peekWork?.title}</strong><p>{peek.kind === "route" ? (peek.route.relations || []).length > 1 ? `${peek.route.relations.length} связей · нажмите, чтобы раскрыть` : peek.route.relations?.[0]?.ownerNote || peek.route.relations?.[0]?.note || "Нажмите, чтобы закрепить связь" : peekEntity?.ownerPurpose || peekEntity?.purpose || peekArea?.ownerNote || peekArea?.note || peekWork?.actor}</p></aside>}
         {offscreenChips.map((chip) => <button key={chip.id} className={`endpoint-chip ${chip.side}`} style={{ left: chip.x, top: chip.y }} onClick={() => { const target = nodes.find((node) => node.id === chip.id); if (target) flow.fitView({ nodes: [target], padding: .55, duration: 380, maxZoom: .95 }); }}>{chip.label}</button>)}
         {legend && <aside className="legend"><header><span><small>ЛЕГЕНДА</small><strong>Как читать карту</strong></span><button onClick={() => setLegend(false)}>×</button></header><div><p><i className="legend-person"></i><span><b>Круглый участник</b><small>человек вне системы; связь показывает, что он вводит, делает или получает</small></span></p><p><i className="legend-area"></i><span><b>Цветная территория</b><small>крупная ответственность проекта; тянется только за заголовок</small></span></p><p><i className="legend-group"></i><span><b>Прозрачный контур</b><small>подсистема вокруг своих элементов; пустое место двигает камеру</small></span></p><p><i className="legend-line"></i><span><b>Сплошная связь</b><small>действие или поток между конкретными элементами</small></span></p><p><i className="legend-dash"></i><span><b>Цветной пунктир</b><small>подтверждённая свежим сигналом работа агента</small></span></p><p><i className="legend-pulse"></i><span><b>Пульс следует за масштабом</b><small>сначала область, затем блок, затем процесс агента</small></span></p></div></aside>}
-        <span className="canvas-hint">фон — камера · заголовок или карточка — перемещение · задержка курсора — быстрый просмотр · Ctrl/Cmd+F — поиск</span></div>
+        <span className="canvas-hint">фон — камера · заголовок или карточка — перемещение · угол области — размер · Ctrl/Cmd+F — поиск</span></div>
     </section></main>
     {edit && <div className="modal-backdrop"><form className="modal" onSubmit={saveEdit}><small>РУЧНАЯ РЕДАКЦИЯ</small><h2>{edit.kind === "relation" ? "Подпись связи" : "Название и описание"}</h2><label><span>{edit.kind === "relation" ? "Что делает эта связь" : "Название"}</span><input autoFocus maxLength="240" value={edit.title} onChange={(event) => setEdit({ ...edit, title: event.target.value })} /></label>{edit.kind !== "relation" && <label><span>Описание</span><textarea rows="4" maxLength="2000" value={edit.description} onChange={(event) => setEdit({ ...edit, description: event.target.value })} /></label>}<div><button type="button" onClick={() => setEdit(null)}>Отмена</button><button className="primary">Сохранить</button></div></form></div>}
     {regenerate && <div className="modal-backdrop"><section className="modal"><small>АРХИТЕКТОР ПРОЕКТА</small><h2>Повторная генерация карты</h2><p>Можно оставить поле пустым — Architect сам выберет композицию по устройству проекта.</p><label><span>Как вы хотите смотреть на проект?</span><textarea rows="4" value={viewpoint} onChange={(event) => setViewpoint(event.target.value)} placeholder="Например: поставь ядро в центр и покажи окружающие модули" /></label><div><button onClick={() => setRegenerate(false)}>Отмена</button><button className="primary" onClick={runRegenerate}>Начать генерацию</button></div></section></div>}
