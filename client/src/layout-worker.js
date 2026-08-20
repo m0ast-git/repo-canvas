@@ -1,19 +1,20 @@
 import ELK from "elkjs/lib/elk-api.js";
 import elkWorkerUrl from "elkjs/lib/elk-worker.min.js?url";
 import { init as initLibavoid, routeEdges as routeLibavoidEdges } from "@mr_mint/elkjs-libavoid";
+import { ENTITY_BASE_HEIGHT, ENTITY_MIN_WIDTH, entityCardSize, groupHeaderSize } from "./node-geometry.js";
 
 const elk = new ELK({ workerUrl: elkWorkerUrl });
 const libavoidWasmUrl = new URL("../../node_modules/libavoid-js/dist/libavoid.wasm", import.meta.url).href;
 let libavoidReady;
 function ensureLibavoid() { if (!libavoidReady) libavoidReady = initLibavoid(libavoidWasmUrl).catch((error) => { libavoidReady = null; throw error; }); return libavoidReady; }
-const ENTITY_W = 244;
-const ENTITY_H = 122;
+const ENTITY_W = ENTITY_MIN_WIDTH;
+const ENTITY_H = ENTITY_BASE_HEIGHT;
 const PERSON_W = 176;
 const PERSON_H = 164;
 const WORK_W = 196;
 const WORK_H = 66;
 const AREA_HEADER_H = 100;
-const CLEARANCE = 18;
+const CLEARANCE = 24;
 const LIBAVOID_OPTIONS = Object.freeze({
   routingType: "orthogonal",
   segmentPenalty: 20,
@@ -21,8 +22,8 @@ const LIBAVOID_OPTIONS = Object.freeze({
   fixedSharedPathPenalty: 50,
   reverseDirectionPenalty: 24,
   portDirectionPenalty: 100,
-  shapeBufferDistance: 14,
-  idealNudgingDistance: 12,
+  shapeBufferDistance: 20,
+  idealNudgingDistance: 18,
   nudgeOrthogonalSegmentsConnectedToShapes: true,
   nudgeOrthogonalTouchingColinearSegments: true,
   performUnifyingNudgingPreprocessingStep: false,
@@ -55,32 +56,48 @@ function entityTree(areaEntities) {
   return children;
 }
 
-function elkEntity(entity, tree, direction) {
+function elkEntity(entity, tree, direction, metrics) {
   const nested = tree.get(entity.id) || [];
-  if (!nested.length) return { id: entity.id, width: ENTITY_W, height: ENTITY_H };
+  if (!nested.length) {
+    const card = entityCardSize(entity); metrics.set(entity.id, { ...card, group: false });
+    return { node: { id: entity.id, width: card.width, height: card.height }, widthHint: card.width };
+  }
+  const children = nested.map((child) => elkEntity(child, tree, direction, metrics));
+  const childrenWidth = Math.max(ENTITY_W, ...children.map((child) => child.widthHint));
+  const header = groupHeaderSize(entity, childrenWidth + 56);
+  const widthHint = Math.max(childrenWidth + 80, header.width + 26);
+  metrics.set(entity.id, { group: true, headerWidth: header.width, headerHeight: header.height, widthHint });
   return {
-    id: entity.id,
-    children: nested.map((child) => elkEntity(child, tree, direction)),
-    layoutOptions: cleanOptions({
+    widthHint,
+    node: {
+      id: entity.id,
+      children: children.map((child) => child.node),
+      layoutOptions: cleanOptions({
       "elk.algorithm": "layered",
       "elk.direction": direction,
       "elk.edgeRouting": "ORTHOGONAL",
-      "elk.padding": "[top=82,left=28,bottom=30,right=28]",
-      "elk.spacing.nodeNode": "54",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "76",
-    }),
+      "elk.padding": `[top=${header.height + 45},left=40,bottom=42,right=40]`,
+      "elk.spacing.nodeNode": "76",
+      "elk.spacing.edgeNode": "46",
+      "elk.spacing.edgeEdge": "38",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "108",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "52",
+      }),
+    },
   };
 }
 
-function collectEntityGeometry(node, parentX, parentY, output, depth = 0) {
+function collectEntityGeometry(node, parentX, parentY, output, metrics, depth = 0) {
   const x = parentX + Number(node.x || 0);
   const y = parentY + Number(node.y || 0);
-  output.set(node.id, { x, y, width: Number(node.width || ENTITY_W), height: Number(node.height || ENTITY_H), depth, group: Boolean(node.children?.length) });
-  for (const child of node.children || []) collectEntityGeometry(child, x, y, output, depth + 1);
+  const metric = metrics.get(node.id) || {};
+  output.set(node.id, { x, y, width: Number(node.width || metric.width || ENTITY_W), height: Number(node.height || metric.height || ENTITY_H), depth, group: Boolean(node.children?.length), headerWidth: metric.headerWidth, headerHeight: metric.headerHeight });
+  for (const child of node.children || []) collectEntityGeometry(child, x, y, output, metrics, depth + 1);
 }
 
 async function layoutArea(area, entities, relations, direction) {
   const tree = entityTree(entities);
+  const metrics = new Map();
   const entityIds = new Set(entities.map((item) => item.id));
   const graph = {
     id: `area-layout:${area.id}`,
@@ -90,17 +107,17 @@ async function layoutArea(area, entities, relations, direction) {
       "elk.direction": direction,
       "elk.edgeRouting": "ORTHOGONAL",
       "elk.padding": `[top=${AREA_HEADER_H},left=34,bottom=38,right=34]`,
-      "elk.spacing.nodeNode": "70",
-      "elk.spacing.edgeEdge": "34",
-      "elk.spacing.edgeNode": "38",
-      "elk.spacing.edgeLabel": "20",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "112",
-      "elk.layered.spacing.edgeEdgeBetweenLayers": "36",
-      "elk.layered.spacing.edgeNodeBetweenLayers": "44",
+      "elk.spacing.nodeNode": "96",
+      "elk.spacing.edgeEdge": "44",
+      "elk.spacing.edgeNode": "56",
+      "elk.spacing.edgeLabel": "28",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "148",
+      "elk.layered.spacing.edgeEdgeBetweenLayers": "48",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "64",
       "elk.layered.mergeEdges": "false",
       "elk.layered.nodePlacement.favorStraightEdges": "true",
     }),
-    children: (tree.get("") || []).map((entity) => elkEntity(entity, tree, direction)),
+    children: (tree.get("") || []).map((entity) => elkEntity(entity, tree, direction, metrics).node),
     edges: relations.filter((relation) => entityIds.has(relation.from) && entityIds.has(relation.to)).map((relation) => ({
       id: relation.id, sources: [relation.from], targets: [relation.to],
       labels: relation.label ? [{ text: relation.label, width: Math.min(220, Math.max(72, relation.label.length * 7 + 28)), height: 28 }] : [],
@@ -109,7 +126,7 @@ async function layoutArea(area, entities, relations, direction) {
   if (!graph.children.length) return { width: 520, height: 260, entities: new Map() };
   const result = await elk.layout(graph);
   const geometry = new Map();
-  for (const child of result.children || []) collectEntityGeometry(child, 0, 0, geometry);
+  for (const child of result.children || []) collectEntityGeometry(child, 0, 0, geometry, metrics);
   return { width: Math.max(520, Number(result.width || 520)), height: Math.max(260, Number(result.height || 260)), entities: geometry };
 }
 
@@ -353,7 +370,7 @@ async function routeView(snapshot, geometry, hierarchy, colors, includeEdge = ()
   }
   for (const [id, rect] of geometry.entities) {
     const areaId = hierarchy.byId.get(id)?.areaId || ""; ensureArea(areaId);
-    const obstacle = rect.group ? { x: rect.x, y: rect.y, width: rect.width, height: 74, id: `entity:${id}` } : { ...rect, id: `entity:${id}` };
+    const obstacle = rect.group ? { x: rect.x, y: rect.y, width: rect.width, height: rect.headerHeight || 76, id: `entity:${id}` } : { ...rect, id: `entity:${id}` };
     boxes.set(`entity:${id}`, obstacle); obstacles.push(obstacle); boxesByArea.get(areaId).set(`entity:${id}`, obstacle); obstaclesByArea.get(areaId).push(obstacle);
   }
   for (const [id, rect] of geometry.work) {
@@ -398,19 +415,18 @@ async function routeLiveMoves(message, emitPriority) {
     if (kind === "entity" && liveContext.hierarchy.byId.get(id)?.kind === "person") movedPersonIds.add(id);
   }
   if (!movedNodeIds.size) return null;
-  // At the overview zoom these are the only visible relations, so publish them
-  // before doing any hidden entity-level routing work.
-  const areaRoutes = movedAreaIds.size || movedPersonIds.size ? await routeAreaView(liveContext.snapshot, geometry, liveContext.colors, (edge) => movedAreaIds.has(edge.source.replace(/^area:/, "")) || movedAreaIds.has(edge.target.replace(/^area:/, "")) || movedPersonIds.has(edge.source.replace(/^entity:/, "")) || movedPersonIds.has(edge.target.replace(/^entity:/, ""))) : [];
   liveContext.geometry = geometry;
+  // Every graph item uses the same drag lifecycle. The main thread draws one
+  // cheap orthogonal preview while the pointer is moving; Libavoid runs once
+  // for the settled geometry instead of racing the cursor with stale routes.
+  if (!message.settle) return null;
+  // At overview zoom these are the visible relations, so publish their one
+  // final route before computing the hidden entity-level routes.
+  const areaRoutes = movedAreaIds.size || movedPersonIds.size ? await routeAreaView(liveContext.snapshot, geometry, liveContext.colors, (edge) => movedAreaIds.has(edge.source.replace(/^area:/, "")) || movedAreaIds.has(edge.target.replace(/^area:/, "")) || movedPersonIds.has(edge.source.replace(/^entity:/, "")) || movedPersonIds.has(edge.target.replace(/^entity:/, ""))) : [];
   if (areaRoutes.length) {
     liveContext.areaRoutes = mergeRoutes(liveContext.areaRoutes, areaRoutes);
     emitPriority?.({ routes: [], areaRoutes });
   }
-  // Keep the latest pointer position ahead of hidden detailed work. Once the
-  // drag stream catches up, detailed routes are precomputed for zoom-in.
-  if (pendingLive && !message.settle) return null;
-  // Every visible graph item follows the same contract: route the affected
-  // detailed edges during the drag as well as the projected overview edges.
   const routes = (await routeView(liveContext.snapshot, geometry, liveContext.hierarchy, liveContext.colors, (edge) => movedNodeIds.has(edge.source) || movedNodeIds.has(edge.target))).routes;
   liveContext.routes = mergeRoutes(liveContext.routes, routes);
   return { routes, areaRoutes: [] };

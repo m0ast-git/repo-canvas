@@ -222,43 +222,63 @@ function saveLayout(body) {
   const requestedRevision = Number(body.canvasRevision);
   if (!Number.isInteger(requestedRevision) || requestedRevision < 0) throw new HttpError(400, "canvasRevision must be a non-negative integer");
   if (!Array.isArray(body.items) || body.items.length === 0) throw new HttpError(400, "items must be a non-empty array");
-  const snapshot = getSnapshot();
-  if (snapshot.storeErrors.length) throw new HttpError(409, "Repo Canvas store must pass check before saving layout");
-  if (requestedRevision !== snapshot.revision) throw new HttpError(409, "Canvas changed; refresh before saving layout", { revision: snapshot.revision });
-  const areas = new Map(snapshot.areas.map((item) => [item.id, item]));
-  const entities = new Map(snapshot.entities.map((item) => [item.id, item]));
-  const work = new Map(snapshot.work.map((item) => [item.id, item]));
-  const seen = new Set();
-  const events = body.items.map((item) => {
-    const kind = String(item?.kind || ""); const id = String(item?.id || "").trim();
-    const x = Number(item?.x); const y = Number(item?.y); const key = `${kind}:${id}`;
-    if (!id || seen.has(key)) throw new HttpError(400, "Each layout item must have a unique id and kind");
-    if (!Number.isFinite(x) || !Number.isFinite(y)) throw new HttpError(400, `Layout coordinates must be finite for ${key}`);
-    seen.add(key);
-    if (kind === "area") {
-      const current = areas.get(id); if (!current) throw new HttpError(404, `Area not found: ${id}`);
-      const { actor, updatedAt, ...payload } = current;
-      return createEvent("area.upsert", { actor: "owner", payload: { ...payload, x, y } });
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const snapshot = getSnapshot();
+    if (snapshot.storeErrors.length) throw new HttpError(409, "Repo Canvas store must pass check before saving layout");
+    if (requestedRevision > snapshot.revision) throw new HttpError(409, "Canvas revision is ahead of the local store", { revision: snapshot.revision });
+    const areas = new Map(snapshot.areas.map((item) => [item.id, item]));
+    const entities = new Map(snapshot.entities.map((item) => [item.id, item]));
+    const work = new Map(snapshot.work.map((item) => [item.id, item]));
+    const seen = new Set();
+    const events = body.items.map((item) => {
+      const kind = String(item?.kind || ""); const id = String(item?.id || "").trim();
+      const x = Number(item?.x); const y = Number(item?.y); const key = `${kind}:${id}`;
+      if (!id || seen.has(key)) throw new HttpError(400, "Each layout item must have a unique id and kind");
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new HttpError(400, `Layout coordinates must be finite for ${key}`);
+      seen.add(key);
+      if (kind === "area") {
+        const current = areas.get(id); if (!current) throw new HttpError(404, `Area not found: ${id}`);
+        const { actor, updatedAt, ...payload } = current;
+        return createEvent("area.upsert", { actor: "owner", payload: { ...payload, x, y } });
+      }
+      if (kind === "entity") {
+        const current = entities.get(id); if (!current) throw new HttpError(404, `Entity not found: ${id}`);
+        let parentId = current.parentId || "";
+        if (Object.hasOwn(item, "parentId")) {
+          parentId = String(item.parentId || "").trim();
+          if (current.kind === "person" && parentId) throw new HttpError(400, "A person cannot be placed inside a project block");
+          if (parentId === id) throw new HttpError(400, "An entity cannot be its own parent");
+          const parent = parentId ? entities.get(parentId) : null;
+          if (parentId && !parent) throw new HttpError(400, `Entity parent not found: ${parentId}`);
+          if (parent && parent.kind === "person") throw new HttpError(400, "A person cannot contain project entities");
+          if (parent && parent.areaId !== current.areaId) throw new HttpError(400, "Entity and parent must belong to the same project area");
+          let ancestor = parent; const visited = new Set();
+          while (ancestor && !visited.has(ancestor.id)) {
+            if (ancestor.id === id) throw new HttpError(400, "Entity parent would create a hierarchy cycle");
+            visited.add(ancestor.id); ancestor = ancestor.parentId ? entities.get(ancestor.parentId) : null;
+          }
+        }
+        const { actor, updatedAt, ...payload } = current;
+        return createEvent("entity.upsert", { actor: "owner", payload: { ...payload, parentId, x, y } });
+      }
+      if (kind === "work") {
+        const current = work.get(id); if (!current) throw new HttpError(404, `Work not found: ${id}`);
+        const { actor, updatedAt, ...payload } = current;
+        return createEvent("work.upsert", { actor: actor || "owner", payload: { ...payload, x, y } });
+      }
+      throw new HttpError(400, `Unsupported layout item kind: ${kind}`);
+    });
+    try {
+      appendEvents(events, { expectedRevision: snapshot.revision });
+      const state = getSnapshot();
+      return { revision: state.revision, saved: events.length, state };
+    } catch (error) {
+      if (error.code === "STALE_REVISION" && attempt < 5) continue;
+      if (error.code === "STALE_REVISION") throw new HttpError(409, "Canvas kept changing while saving layout", { revision: error.currentRevision });
+      throw error;
     }
-    if (kind === "entity") {
-      const current = entities.get(id); if (!current) throw new HttpError(404, `Entity not found: ${id}`);
-      const { actor, updatedAt, ...payload } = current;
-      return createEvent("entity.upsert", { actor: "owner", payload: { ...payload, x, y } });
-    }
-    if (kind === "work") {
-      const current = work.get(id); if (!current) throw new HttpError(404, `Work not found: ${id}`);
-      const { actor, updatedAt, ...payload } = current;
-      return createEvent("work.upsert", { actor: actor || "owner", payload: { ...payload, x, y } });
-    }
-    throw new HttpError(400, `Unsupported layout item kind: ${kind}`);
-  });
-  try {
-    appendEvents(events, { expectedRevision: requestedRevision });
-  } catch (error) {
-    if (error.code === "STALE_REVISION") throw new HttpError(409, "Canvas changed; refresh before saving layout", { revision: error.currentRevision });
-    throw error;
   }
-  return { revision: requestedRevision + events.length, saved: events.length };
+  throw new HttpError(409, "Canvas kept changing while saving layout");
 }
 
 function saveRename(body) {

@@ -73,9 +73,9 @@ test("saved coordinates do not restart the topology layout generation", () => {
 
 test("a successful drag patches the local snapshot without waiting for polling", () => {
   const snapshot = { revision: 4, areas: [{ id: "core", x: 0, y: 0 }], entities: [{ id: "api", x: 10, y: 20 }] };
-  const patched = patchSnapshotPositions(snapshot, [{ kind: "entity", id: "api", x: 320, y: -80 }], 5);
+  const patched = patchSnapshotPositions(snapshot, [{ kind: "entity", id: "api", x: 320, y: -80, parentId: "runtime" }], 5);
   assert.equal(patched.revision, 5);
-  assert.deepEqual(patched.entities[0], { id: "api", x: 320, y: -80 });
+  assert.deepEqual(patched.entities[0], { id: "api", x: 320, y: -80, parentId: "runtime" });
   assert.equal(patched.areas[0], snapshot.areas[0]);
   assert.equal(snapshot.entities[0].x, 10);
 });
@@ -366,7 +366,8 @@ test("nested invocation resolves the Git root and validates semantic statuses", 
 test("session locators stay structured and Codex Desktop binds automatically", (t) => {
   const root = makeRepository(t);
   assert.equal(runCli(root, ["area", "--id", "core", "--title", "Core"]).status, 0);
-  assert.equal(runCli(root, ["entity", "--id", "module", "--area", "core", "--label", "Module", "--status", "operational"]).status, 0);
+  assert.equal(runCli(root, ["entity", "--id", "container", "--area", "core", "--label", "Container", "--status", "operational", "--kind", "capability"]).status, 0);
+  assert.equal(runCli(root, ["entity", "--id", "module", "--area", "core", "--parent", "container", "--label", "Module", "--status", "operational"]).status, 0);
   const threadId = "019ff2ac-1bcb-7103-b395-cfe4e749a251";
   const node = runCli(root, ["work", "--id", "demo", "--title", "Demo work", "--targets", "module", "--status", "active", "--actor", "codex"], {
     env: { CODEX_THREAD_ID: threadId, CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "Codex Desktop" },
@@ -447,7 +448,8 @@ test("repair previews and quarantines malformed JSON without hiding schema error
 test("loopback server guards navigation, reports port collision, and stops", async (t) => {
   const root = makeRepository(t);
   assert.equal(runCli(root, ["area", "--id", "core", "--title", "Core"]).status, 0);
-  assert.equal(runCli(root, ["entity", "--id", "module", "--area", "core", "--label", "Module", "--status", "operational"]).status, 0);
+  assert.equal(runCli(root, ["entity", "--id", "container", "--area", "core", "--label", "Container", "--status", "operational", "--kind", "capability"]).status, 0);
+  assert.equal(runCli(root, ["entity", "--id", "module", "--area", "core", "--parent", "container", "--label", "Module", "--status", "operational"]).status, 0);
   assert.equal(runCli(root, ["relation", "--id", "module-loop", "--from", "module", "--to", "module", "--label", "uses"]).status, 0);
   assert.equal(runCli(root, ["work", "--id", "demo", "--title", "Demo work", "--targets", "module", "--status", "planned", "--actor", "codex"], {
     env: { CODEX_THREAD_ID: "", CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "" },
@@ -548,7 +550,7 @@ test("loopback server guards navigation, reports port collision, and stops", asy
     canvasRevision: state.json.revision,
     items: [
       { kind: "area", id: "core", x: 180, y: 220 },
-      { kind: "entity", id: "module", x: 260, y: 340 },
+      { kind: "entity", id: "module", x: 260, y: 340, parentId: "" },
       { kind: "work", id: "demo", x: 540, y: 360 },
     ],
   });
@@ -560,12 +562,22 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   });
   assert.equal(layout.status, 201, layout.text);
   assert.equal(layout.json.saved, 3);
+  assert.equal(layout.json.state.revision, layout.json.revision);
   const movedState = await request(port, { path: "/api/state", headers: authHeaders });
   assert.deepEqual([movedState.json.areas[0].x, movedState.json.areas[0].y], [180, 220]);
-  assert.deepEqual([movedState.json.entities[0].x, movedState.json.entities[0].y], [260, 340]);
+  const movedModule = movedState.json.entities.find((item) => item.id === "module");
+  assert.deepEqual([movedModule.x, movedModule.y], [260, 340]);
+  assert.equal(movedModule.parentId, "", "dragging fully outside must detach from its semantic container");
   assert.deepEqual([movedState.json.work[0].x, movedState.json.work[0].y], [540, 360]);
   assert.equal(movedState.json.work[0].actor, "codex", "moving work must preserve the owning agent");
-  let renameRevision = movedState.json.revision;
+  const reparentPayload = JSON.stringify({ canvasRevision: movedState.json.revision, items: [{ kind: "entity", id: "module", x: 280, y: 360, parentId: "container" }] });
+  const reparented = await request(port, {
+    method: "POST", path: "/api/layout",
+    headers: { ...commonHeaders, "Content-Length": Buffer.byteLength(reparentPayload), Origin: `http://127.0.0.1:${port}` }, body: reparentPayload,
+  });
+  assert.equal(reparented.status, 201, reparented.text);
+  assert.equal(reparented.json.state.entities.find((item) => item.id === "module").parentId, "container");
+  let renameRevision = reparented.json.revision;
   for (const [kind, id, value] of [
     ["area", "core", "Runtime"],
     ["entity", "module", "Worker"],
@@ -583,7 +595,7 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   }
   const renamedState = await request(port, { path: "/api/state", headers: authHeaders });
   assert.equal(renamedState.json.areas[0].ownerTitle, "Runtime");
-  assert.equal(renamedState.json.entities[0].ownerLabel, "Worker");
+  assert.equal(renamedState.json.entities.find((item) => item.id === "module").ownerLabel, "Worker");
   assert.equal(renamedState.json.relations[0].ownerLabel, "feeds itself");
   for (const [kind, id, values] of [
     ["area", "core", { title: "Runtime", description: "Owner area description" }],
@@ -598,12 +610,13 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   }
   const editedState = await request(port, { path: "/api/state", headers: authHeaders });
   assert.equal(editedState.json.areas[0].ownerNote, "Owner area description");
-  assert.equal(editedState.json.entities[0].ownerPurpose, "Owner entity description");
+  assert.equal(editedState.json.entities.find((item) => item.id === "module").ownerPurpose, "Owner entity description");
   assert.equal(runCli(root, ["entity", "--id", "module", "--area", "core", "--label", "Upstream module", "--status", "operational"]).status, 0);
   const refreshedState = await request(port, { path: "/api/state", headers: authHeaders });
-  assert.equal(refreshedState.json.entities[0].label, "Upstream module");
-  assert.equal(refreshedState.json.entities[0].ownerLabel, "Worker", "owner name must survive later agent updates");
-  assert.equal(refreshedState.json.entities[0].ownerPurpose, "Owner entity description", "owner description must survive later agent updates");
+  const refreshedModule = refreshedState.json.entities.find((item) => item.id === "module");
+  assert.equal(refreshedModule.label, "Upstream module");
+  assert.equal(refreshedModule.ownerLabel, "Worker", "owner name must survive later agent updates");
+  assert.equal(refreshedModule.ownerPurpose, "Owner entity description", "owner description must survive later agent updates");
   const emptyRenamePayload = JSON.stringify({ canvasRevision: renameRevision, kind: "entity", id: "module", value: "   " });
   const emptyRename = await request(port, {
     method: "POST",
@@ -618,7 +631,18 @@ test("loopback server guards navigation, reports port collision, and stops", asy
     headers: { ...commonHeaders, "Content-Length": Buffer.byteLength(layoutPayload), Origin: `http://127.0.0.1:${port}` },
     body: layoutPayload,
   });
-  assert.equal(staleLayout.status, 409);
+  assert.equal(staleLayout.status, 201, staleLayout.text);
+  assert.equal(staleLayout.json.saved, 3, "layout-only owner changes must rebase over unrelated Observer or rename revisions");
+
+  const cyclicLayoutPayload = JSON.stringify({
+    canvasRevision: staleLayout.json.revision,
+    items: [{ kind: "entity", id: "module", x: 260, y: 340, parentId: "module" }],
+  });
+  const cyclicLayout = await request(port, {
+    method: "POST", path: "/api/layout",
+    headers: { ...commonHeaders, "Content-Length": Buffer.byteLength(cyclicLayoutPayload), Origin: `http://127.0.0.1:${port}` }, body: cyclicLayoutPayload,
+  });
+  assert.equal(cyclicLayout.status, 400);
 
   const second = spawn(process.execPath, [cli, "start", "--root", root, "--port", String(port)], {
     cwd: root,
