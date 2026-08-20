@@ -1,7 +1,10 @@
 import ELK from "elkjs/lib/elk-api.js";
 import elkWorkerUrl from "elkjs/lib/elk-worker.min.js?url";
-import { init as initLibavoid, routeEdges as routeLibavoidEdges } from "@mr_mint/elkjs-libavoid";
+import { createRoutingSession, init as initLibavoid, routeEdges as routeLibavoidEdges } from "@mr_mint/elkjs-libavoid";
+import { normalizeStoredEntityPositions } from "./container-layout.js";
 import { ENTITY_BASE_HEIGHT, ENTITY_MIN_WIDTH, entityCardSize, groupHeaderSize } from "./node-geometry.js";
+import { RoutingRegistry } from "./routing-registry.js";
+import { createRoutingScope, routesFromRoutingResults } from "./routing-scopes.js";
 
 const elk = new ELK({ workerUrl: elkWorkerUrl });
 const libavoidWasmUrl = new URL("../../node_modules/libavoid-js/dist/libavoid.wasm", import.meta.url).href;
@@ -298,26 +301,31 @@ function localFallback(edge, boxes) {
   return { ...edge, ...routeBase, points: simplify([start, { x: start.x, y: midY }, { x: end.x, y: midY }, end]), fallback: true };
 }
 
-function sameRect(a, b) { return Math.abs(a.x - b.x) < .01 && Math.abs(a.y - b.y) < .01 && Math.abs(a.width - b.width) < .01 && Math.abs(a.height - b.height) < .01; }
-
-async function routeEdges(edges, boxes, obstacles) {
-  const routable = edges.filter((edge) => boxes.has(edge.source) && boxes.has(edge.target));
-  if (!routable.length) return [];
-  const children = []; const registered = new Map();
-  for (const [id, rect] of boxes) { children.push({ id, x: rect.x, y: rect.y, width: rect.width, height: rect.height }); registered.set(id, rect); }
-  obstacles.forEach((obstacle, index) => {
-    let id = String(obstacle.id || `obstacle-${index}`); const current = registered.get(id);
-    if (current && sameRect(current, obstacle)) return;
-    if (current) id = `obstacle:${index}:${id}`;
-    children.push({ id, x: obstacle.x, y: obstacle.y, width: obstacle.width, height: obstacle.height }); registered.set(id, obstacle);
-  });
+async function routeScopeOnce(scope) {
   let routed = new Map();
   try {
     await ensureLibavoid();
-    routed = await routeLibavoidEdges({ id: "repo-canvas-routing", children, edges: routable.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })) }, LIBAVOID_OPTIONS);
-  } catch (error) { console.warn(`Repo Canvas libavoid fallback: ${error?.message || error}`); }
-  return routable.map((edge) => { const route = routed.get(edge.id); const source = boxes.get(edge.source); const target = boxes.get(edge.target); return route ? { ...edge, sourceBase: { x: source.x, y: source.y }, targetBase: { x: target.x, y: target.y }, points: simplify([route.sourcePoint, ...(route.bendPoints || []), route.targetPoint]), sourceSide: route.sourceSide, targetSide: route.targetSide } : localFallback(edge, boxes); }).filter(Boolean);
+    routed = await routeLibavoidEdges(scope.graph, LIBAVOID_OPTIONS);
+  } catch (error) {
+    console.warn(`Repo Canvas libavoid fallback: ${error?.message || error}`);
+  }
+  const fromLibavoid = new Map(routesFromRoutingResults(scope, routed).map((route) => [route.id, { ...route, points: simplify(route.points) }]));
+  return scope.edges.map((edge) => fromLibavoid.get(edge.id) || localFallback(edge, scope.nodes)).filter(Boolean);
 }
+
+function createRegistry() {
+  return new RoutingRegistry({
+    createSession: async (graph) => {
+      await ensureLibavoid();
+      return createRoutingSession(graph, LIBAVOID_OPTIONS);
+    },
+    routeOnce: routeScopeOnce,
+    onError: (error) => console.warn(`Repo Canvas incremental routing fallback: ${error?.message || error}`),
+  });
+}
+
+const areaRouting = createRegistry();
+const detailRouting = createRegistry();
 
 function aggregateRelations(snapshot) {
   const areaByEntity = new Map(snapshot.entities.map((entity) => [entity.id, entity.areaId])); const grouped = new Map();
@@ -359,13 +367,13 @@ function workEdges(snapshot, hierarchy) {
   return output;
 }
 
-async function routeView(snapshot, geometry, hierarchy, colors, includeEdge = () => true) {
+function detailedRoutingScopes(snapshot, geometry, hierarchy, colors) {
   const boxes = new Map(); const obstacles = []; const boxesByArea = new Map(); const obstaclesByArea = new Map();
   const ensureArea = (areaId) => { if (!boxesByArea.has(areaId)) boxesByArea.set(areaId, new Map()); if (!obstaclesByArea.has(areaId)) obstaclesByArea.set(areaId, []); };
   for (const area of snapshot.areas) {
     const rect = geometry.areas.get(area.id); if (!rect) continue;
     ensureArea(area.id);
-    const header = { x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_H - 20, id: `area-header:${area.id}` };
+    const header = { x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_H - 20, id: `area-header:${area.id}`, moveWith: `area:${area.id}`, moveOffsetX: 18, moveOffsetY: 14 };
     obstacles.push(header); obstaclesByArea.get(area.id).push(header);
   }
   for (const [id, rect] of geometry.entities) {
@@ -377,26 +385,28 @@ async function routeView(snapshot, geometry, hierarchy, colors, includeEdge = ()
     const obstacle = { ...rect, id: `work:${id}` };
     boxes.set(`work:${id}`, rect); obstacles.push(obstacle);
   }
-  const edges = [...aggregateRelations(snapshot), ...workEdges(snapshot, hierarchy)].filter(includeEdge).sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
+  const workColors = { active: "#f09a52", blocked: "#ed716a", planned: "#e1b45d" };
+  const edges = [...aggregateRelations(snapshot), ...workEdges(snapshot, hierarchy)]
+    .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))
+    .map((edge) => ({ ...edge, color: edge.type === "work" ? workColors[edge.status] || workColors.active : colors.get(edge.sourceAreaId) || colors.get(edge.targetAreaId) || "#b88f72" }));
   const local = new Map(); const cross = [];
   for (const edge of edges) { if (edge.sourceAreaId && edge.sourceAreaId === edge.targetAreaId) { if (!local.has(edge.sourceAreaId)) local.set(edge.sourceAreaId, []); local.get(edge.sourceAreaId).push(edge); } else cross.push(edge); }
-  const routed = [];
-  for (const [areaId, areaEdges] of local) routed.push(...await routeEdges(areaEdges, boxesByArea.get(areaId) || new Map(), obstaclesByArea.get(areaId) || []));
-  if (cross.length) routed.push(...await routeEdges(cross, boxes, obstacles));
-  const workColors = { active: "#f09a52", blocked: "#ed716a", planned: "#e1b45d" };
-  const routes = routed.map((route) => ({ ...route, color: route.type === "work" ? workColors[route.status] || workColors.active : colors.get(route.sourceAreaId) || colors.get(route.targetAreaId) || "#b88f72" }));
-  return { routes };
+  const scopes = [];
+  for (const [areaId, areaEdges] of local) scopes.push(createRoutingScope({ id: `detail:area:${areaId}`, edges: areaEdges, boxes: boxesByArea.get(areaId) || new Map(), obstacles: obstaclesByArea.get(areaId) || [] }));
+  if (cross.length) scopes.push(createRoutingScope({ id: "detail:cross", edges: cross, boxes, obstacles }));
+  return scopes;
 }
 
-async function routeAreaView(snapshot, geometry, colors, includeEdge = () => true) {
+function areaRoutingScopes(snapshot, geometry, colors) {
   const boxes = new Map(); const obstacles = [];
   for (const [id, rect] of geometry.areas) { boxes.set(`area:${id}`, rect); obstacles.push({ ...rect, id: `area:${id}` }); }
   for (const entity of snapshot.entities.filter((item) => item.kind === "person")) {
     const rect = geometry.entities.get(entity.id); if (!rect) continue;
     boxes.set(`entity:${entity.id}`, rect); obstacles.push({ ...rect, id: `entity:${entity.id}` });
   }
-  const edges = aggregateAreaRelations(snapshot).filter(includeEdge).sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
-  return (await routeEdges(edges, boxes, obstacles)).map((route) => ({ ...route, color: colors.get(route.sourceAreaId) || colors.get(route.targetAreaId) || "#b88f72" }));
+  const edges = aggregateAreaRelations(snapshot).sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))
+    .map((edge) => ({ ...edge, color: colors.get(edge.sourceAreaId) || colors.get(edge.targetAreaId) || "#b88f72" }));
+  return [createRoutingScope({ id: "area:overview", edges, boxes, obstacles })];
 }
 
 function mergeRoutes(current, updates) { const merged = new Map((current || []).map((route) => [route.id, route])); for (const route of updates || []) merged.set(route.id, route); return [...merged.values()]; }
@@ -406,13 +416,11 @@ let liveContext = null;
 async function routeLiveMoves(message, emitPriority) {
   if (!liveContext || liveContext.revision !== message.revision || !Array.isArray(message.moves) || !message.moves.length) return null;
   const geometry = { ...liveContext.geometry, areas: new Map(liveContext.geometry.areas), entities: new Map(liveContext.geometry.entities), work: new Map(liveContext.geometry.work) };
-  const movedNodeIds = new Set(); const movedAreaIds = new Set(); const movedPersonIds = new Set();
+  const movedNodeIds = new Set();
   for (const move of message.moves) {
     const nodeId = String(move.id || ""); const [kind, ...rest] = nodeId.split(":"); const id = rest.join(":"); const collection = kind === "area" ? geometry.areas : kind === "entity" ? geometry.entities : kind === "work" ? geometry.work : null; const current = collection?.get(id);
     if (!current || !Number.isFinite(move.x) || !Number.isFinite(move.y)) continue;
     collection.set(id, { ...current, x: move.x, y: move.y }); movedNodeIds.add(nodeId);
-    if (kind === "area") movedAreaIds.add(id);
-    if (kind === "entity" && liveContext.hierarchy.byId.get(id)?.kind === "person") movedPersonIds.add(id);
   }
   if (!movedNodeIds.size) return null;
   liveContext.geometry = geometry;
@@ -420,14 +428,18 @@ async function routeLiveMoves(message, emitPriority) {
   // cheap orthogonal preview while the pointer is moving; Libavoid runs once
   // for the settled geometry instead of racing the cursor with stale routes.
   if (!message.settle) return null;
+  // Reparenting changes container dimensions and routing-scope membership.
+  // The installed session API cannot resize obstacles, so keep the preview
+  // until the updated snapshot triggers a clean topology rebuild.
+  if (message.structural) return null;
   // At overview zoom these are the visible relations, so publish their one
-  // final route before computing the hidden entity-level routes.
-  const areaRoutes = movedAreaIds.size || movedPersonIds.size ? await routeAreaView(liveContext.snapshot, geometry, liveContext.colors, (edge) => movedAreaIds.has(edge.source.replace(/^area:/, "")) || movedAreaIds.has(edge.target.replace(/^area:/, "")) || movedPersonIds.has(edge.source.replace(/^entity:/, "")) || movedPersonIds.has(edge.target.replace(/^entity:/, ""))) : [];
+  // incremental transaction before updating hidden entity-level scopes.
+  const areaRoutes = await areaRouting.settle(message.moves);
   if (areaRoutes.length) {
     liveContext.areaRoutes = mergeRoutes(liveContext.areaRoutes, areaRoutes);
     emitPriority?.({ routes: [], areaRoutes });
   }
-  const routes = (await routeView(liveContext.snapshot, geometry, liveContext.hierarchy, liveContext.colors, (edge) => movedNodeIds.has(edge.source) || movedNodeIds.has(edge.target))).routes;
+  const routes = await detailRouting.settle(message.moves);
   liveContext.routes = mergeRoutes(liveContext.routes, routes);
   return { routes, areaRoutes: [] };
 }
@@ -439,17 +451,21 @@ async function calculate(snapshot, revision, emitPartial) {
   const areaLayouts = new Map();
   for (const area of snapshot.areas) areaLayouts.set(area.id, await layoutArea(area, snapshot.entities.filter((entity) => entity.areaId === area.id), snapshot.relations || [], direction));
   const areas = await layoutAreas(snapshot, areaLayouts, direction);
-  const entities = new Map();
+  const entityById = new Map(snapshot.entities.map((entity) => [entity.id, entity]));
+  let entities = new Map();
+  const defaultEntities = new Map();
   for (const area of snapshot.areas) {
     const areaRect = areas.get(area.id); const local = areaLayouts.get(area.id); if (!areaRect) continue;
     if (Number.isFinite(Number(area.x)) && Number.isFinite(Number(area.y))) { areaRect.x = Number(area.x); areaRect.y = Number(area.y); }
     for (const [id, rect] of local.entities) {
       const absolute = { ...rect, x: areaRect.x + rect.x, y: areaRect.y + rect.y };
-      const entity = snapshot.entities.find((item) => item.id === id);
+      defaultEntities.set(id, { ...absolute });
+      const entity = entityById.get(id);
       if (Number.isFinite(Number(entity?.x)) && Number.isFinite(Number(entity?.y))) { absolute.x = Number(entity.x); absolute.y = Number(entity.y); }
       entities.set(id, absolute);
     }
   }
+  entities = normalizeStoredEntityPositions(snapshot, entities, defaultEntities, areas);
   for (const [id, rect] of placePeople(snapshot, areas, entities)) entities.set(id, rect);
   const hierarchy = ancestors(snapshot.entities);
   const work = workPositions(snapshot, entities, areas);
@@ -457,7 +473,7 @@ async function calculate(snapshot, revision, emitPartial) {
   const minX = Math.min(0, ...allRects.map((item) => item.x)); const minY = Math.min(0, ...allRects.map((item) => item.y)); const maxX = Math.max(1200, ...allRects.map((item) => item.x + item.width)); const maxY = Math.max(800, ...allRects.map((item) => item.y + item.height));
   const world = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   const geometry = { areas, entities, work, world };
-  const areaRoutes = await routeAreaView(snapshot, geometry, colors);
+  const areaRoutes = await areaRouting.replace(areaRoutingScopes(snapshot, geometry, colors));
   const base = {
     areas: [...areas].map(([id, rect]) => ({ id, ...rect, color: colors.get(id) })),
     entities: [...entities].map(([id, rect]) => ({ id, ...rect, topId: hierarchy.top.get(id), depth: hierarchy.depth.get(id) || 0 })),
@@ -466,7 +482,7 @@ async function calculate(snapshot, revision, emitPartial) {
   const context = { revision, snapshot, geometry, hierarchy, colors, routes: [], areaRoutes };
   liveContext = context;
   emitPartial?.({ ...base, routes: [] });
-  const routes = (await routeView(snapshot, geometry, hierarchy, colors)).routes;
+  const routes = await detailRouting.replace(detailedRoutingScopes(snapshot, geometry, hierarchy, colors));
   context.routes = routes;
   return { ...base, routes };
 }

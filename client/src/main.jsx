@@ -16,8 +16,10 @@ import {
 } from "./drag-geometry.js";
 import { currentWork, graphHierarchy, graphItemMoveIds } from "./graph-contract.js";
 import { layoutFingerprint } from "./layout-fingerprint.js";
+import { placeRouteLabels } from "./route-label-layout.js";
 import { persistentRouteLabel, routesForTier } from "./route-presentation.js";
 import { updateFinished, updatePollDelay } from "./update-polling.js";
+import { settleViewportTransform } from "./viewport-geometry.js";
 import "./styles.css";
 
 const TOKEN_KEY = "repo-canvas.api-token";
@@ -53,7 +55,6 @@ function relativeTime(value) {
   if (seconds < 5) return "сейчас"; if (seconds < 60) return `${seconds} сек`; if (seconds < 3600) return `${Math.floor(seconds / 60)} мин`; return `${Math.floor(seconds / 3600)} ч`;
 }
 
-function overlap(a, b, gap = 0) { return a.x - gap < b.x + b.width && a.x + a.width + gap > b.x && a.y - gap < b.y + b.height && a.y + a.height + gap > b.y; }
 function routePath(points, radius = 16) {
   if (!points?.length) return ""; if (points.length < 3) return `M ${points[0].x} ${points[0].y} L ${points.at(-1).x} ${points.at(-1).y}`;
   const parts = [`M ${points[0].x} ${points[0].y}`];
@@ -71,39 +72,6 @@ function followMovedNodes(route, baseRects, currentRects) {
   const sourceBase = route.sourceBase || baseRects.get(route.source); const targetBase = route.targetBase || baseRects.get(route.target);
   const sourceCurrent = currentRects.get(route.source); const targetCurrent = currentRects.get(route.target);
   return followRouteDuringDrag(route, sourceBase, targetBase, sourceCurrent, targetCurrent);
-}
-
-function labelCandidates(points, width) {
-  const candidates = [];
-  for (let index = 1; index < points.length; index += 1) {
-    const from = points[index - 1]; const to = points[index]; const length = Math.hypot(to.x - from.x, to.y - from.y);
-    const vertical = Math.abs(to.y - from.y) > Math.abs(to.x - from.x);
-    if (length < (vertical ? 54 : width + 30)) continue;
-    for (const fraction of [.5, .34, .66, .2, .8]) candidates.push({ x: from.x + (to.x - from.x) * fraction, y: from.y + (to.y - from.y) * fraction, score: Math.abs(fraction - .5) + index / points.length * .05 });
-  }
-  return candidates.sort((a, b) => a.score - b.score);
-}
-
-function placeLabels(routes, viewport, size, obstacles) {
-  if (!size.width || !viewport.zoom) return new Map();
-  const visible = { x: -viewport.x / viewport.zoom, y: -viewport.y / viewport.zoom, width: size.width / viewport.zoom, height: size.height / viewport.zoom };
-  const occupied = []; const result = new Map();
-  for (const route of routes.filter((item) => item.label)) {
-    const width = Math.min(260, Math.max(96, route.label.length * 6.5 + 32)); const height = 32;
-    const visualWidth = width / viewport.zoom; const visualHeight = height / viewport.zoom;
-    let safe = true; let point = labelCandidates(route.points, visualWidth).find((candidate) => {
-      const box = { x: candidate.x - visualWidth / 2, y: candidate.y - visualHeight / 2, width: visualWidth, height: visualHeight };
-      const inside = box.x >= visible.x + 8 / viewport.zoom && box.y >= visible.y + 8 / viewport.zoom && box.x + box.width <= visible.x + visible.width - 8 / viewport.zoom && box.y + box.height <= visible.y + visible.height - 8 / viewport.zoom;
-      return inside && !obstacles.some((item) => overlap(box, item, 5)) && !occupied.some((item) => overlap(box, item, 10));
-    });
-    if (!point) { safe = false;
-      const segments = route.points.slice(1).map((to, index) => ({ from: route.points[index], to, length: Math.hypot(to.x - route.points[index].x, to.y - route.points[index].y) })).sort((a, b) => b.length - a.length);
-      point = segments.flatMap((segment) => [.5, .25, .75].map((fraction) => ({ x: segment.from.x + (segment.to.x - segment.from.x) * fraction, y: segment.from.y + (segment.to.y - segment.from.y) * fraction }))).find((candidate) => candidate.x >= visible.x && candidate.y >= visible.y && candidate.x <= visible.x + visible.width && candidate.y <= visible.y + visible.height);
-      if (!point && segments[0]) point = { x: (segments[0].from.x + segments[0].to.x) / 2, y: (segments[0].from.y + segments[0].to.y) / 2 };
-    }
-    if (point) { const box = { x: point.x - visualWidth / 2, y: point.y - visualHeight / 2, width: visualWidth, height: visualHeight }; if (safe) occupied.push(box); result.set(route.id, { ...point, width, height, scale: 1 / viewport.zoom, safe }); }
-  }
-  return result;
 }
 
 const HiddenHandles = () => <><Handle type="target" position={Position.Left} className="hidden-handle" /><Handle type="source" position={Position.Right} className="hidden-handle" /></>;
@@ -192,8 +160,8 @@ function useLayout(snapshot) {
     liveOverrides.current = { revision: null, routes: new Map(), areaRoutes: new Map() };
     requestId.current += 1; worker.current.postMessage({ type: "layout", id: requestId.current, revision, snapshot });
   }, [layoutKey]);
-  const routeDrag = useCallback((moves, immediate = false) => {
-    pendingMoves.current = { moves, settle: immediate };
+  const routeDrag = useCallback((moves, immediate = false, structural = false) => {
+    pendingMoves.current = { moves, settle: immediate, structural };
     const send = () => { dragFrame.current = null; const current = pendingMoves.current; pendingMoves.current = null; if (!current?.moves?.length || !worker.current) return; const seq = ++liveSeq.current; worker.current.postMessage({ type: "route-drag", revision: activeRoutingEpoch.current, seq, ...current }); };
     if (immediate) { cancelAnimationFrame(dragFrame.current); send(); return; }
     if (dragFrame.current === null) dragFrame.current = requestAnimationFrame(send);
@@ -300,7 +268,7 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
   }, [nodes, activityTier, dragging]);
   const placements = useMemo(() => {
     if (dragging && placementCache.current.size) return placementCache.current;
-    const next = placeLabels(liveRoutes, viewport, size, obstacles);
+    const next = placeRouteLabels(liveRoutes, viewport, size, obstacles);
     placementCache.current = next; return next;
   }, [liveRoutes, viewport, size, obstacles, dragging]);
   const edges = useMemo(() => {
@@ -322,11 +290,8 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
 
   const onViewportChange = useCallback((next) => { pendingViewport.current = next; if (viewportFrame.current !== null) return; viewportFrame.current = requestAnimationFrame(() => { viewportFrame.current = null; setViewport(pendingViewport.current); }); }, []);
   const settleViewport = useCallback((event, next) => {
-    const step = next.zoom < .15 ? .005 : next.zoom < .4 ? .01 : .025;
-    const zoom = Math.max(.025, Math.min(1.7, Math.round(next.zoom / step) * step));
     const rect = wrapper.current?.getBoundingClientRect(); const anchor = rect && Number.isFinite(event?.clientX) ? { x: event.clientX - rect.left, y: event.clientY - rect.top } : { x: size.width / 2, y: size.height / 2 };
-    const world = { x: (anchor.x - next.x) / next.zoom, y: (anchor.y - next.y) / next.zoom }; const pixelRatio = devicePixelRatio || 1;
-    const settled = { x: Math.round((anchor.x - world.x * zoom) * pixelRatio) / pixelRatio, y: Math.round((anchor.y - world.y * zoom) * pixelRatio) / pixelRatio, zoom };
+    const settled = settleViewportTransform(next, size, anchor, devicePixelRatio || 1);
     const changed = Math.abs(settled.x - next.x) > .01 || Math.abs(settled.y - next.y) > .01 || Math.abs(settled.zoom - next.zoom) > .0001;
     onViewportChange(settled); if (changed) flow.setViewport(settled, { duration: 0 });
   }, [flow, onViewportChange, size]);
@@ -455,17 +420,17 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
       if (move) return { ...item, position: { x: move.x, y: move.y }, data: item.data?.dragTarget ? { ...item.data, dragTarget: false } : item.data };
       return item.data?.dragTarget ? { ...item, data: { ...item.data, dragTarget: false } } : item;
     }), nextHierarchy));
-    routeDrag(finalMoves, true);
+    const parentChanged = nextParentId !== context.originalParentId;
+    routeDrag(finalMoves, true, parentChanged);
     try {
       await enqueueMutation(() => persistLayout(items));
-      const parentChanged = nextParentId !== context.originalParentId;
       remember({ type: "layout", label: context.kind === "area" ? "перемещение области" : context.kind === "work" ? "перемещение работы" : parentChanged ? nextParentId ? "перемещение элемента между блоками" : "извлечение элемента из блока" : "перемещение элемента", before, after: items });
       toast(context.kind === "area" ? "Область и всё содержимое перемещены" : context.kind === "work" ? "Работа перемещена" : parentChanged ? nextParentId ? "Элемент перемещён и привязан к новому блоку" : "Элемент вынесен из блока" : "Элемент и его вложенная структура перемещены");
     } catch (error) {
       const beforeMap = new Map(beforeMoves.map((move) => [move.id, move]));
       for (const move of beforeMoves) manualPositions.current.set(move.id, { x: move.x, y: move.y });
       setNodes((current) => fitGroupContours(current.map((item) => beforeMap.has(item.id) ? { ...item, position: beforeMap.get(item.id), data: item.data?.dragTarget ? { ...item.data, dragTarget: false } : item.data } : item.data?.dragTarget ? { ...item, data: { ...item.data, dragTarget: false } } : item), hierarchy));
-      routeDrag(beforeMoves, true);
+      routeDrag(beforeMoves, true, parentChanged);
       toast(error.message, true);
     }
   }, [activityTier, displaySnapshot, enqueueMutation, entityMap, hierarchy, liveWork, nodes, persistLayout, remember, routeDrag, toast]);
@@ -488,7 +453,10 @@ function Canvas({ snapshot, setSnapshot, toast, unauthorized, theme, toggleTheme
         const valueMap = new Map(values.map((item) => [`${item.kind}:${item.id}`, item]));
         const historyHierarchy = hierarchyWithLayoutItems(displaySnapshot, values);
         setNodes((current) => fitGroupContours(current.map((node) => { const value = valueMap.get(node.id); return value ? { ...node, position: { x: value.x, y: value.y } } : node; }), historyHierarchy));
-        routeDrag(values.map((value) => ({ id: `${value.kind}:${value.id}`, x: value.x, y: value.y })), true);
+        const beforeParents = new Map((entry.before || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "parentId")).map((value) => [value.id, value.parentId || ""]));
+        const afterParents = new Map((entry.after || []).filter((value) => value.kind === "entity" && Object.hasOwn(value, "parentId")).map((value) => [value.id, value.parentId || ""]));
+        const structural = [...new Set([...beforeParents.keys(), ...afterParents.keys()])].some((id) => beforeParents.get(id) !== afterParents.get(id));
+        routeDrag(values.map((value) => ({ id: `${value.kind}:${value.id}`, x: value.x, y: value.y })), true, structural);
       }
       from.pop(); to.push(entry); syncHistory(); if (entry.type !== "layout") await refreshSnapshot(); toast(`${direction === "undo" ? "Отменено" : "Повторено"}: ${entry.label}`);
     } catch (error) { toast(error.message, true); }

@@ -3,8 +3,62 @@ import assert from "node:assert/strict";
 
 import {
   CONTAINER_ITEM_GAP, CONTAINER_PADDING_X, CONTAINER_PADDING_Y,
-  compactContainerMembership, orderItemsForDrop, packVerticalContainer,
+  compactContainerMembership, normalizeStoredEntityPositions, orderItemsForDrop, packVerticalContainer,
 } from "../client/src/container-layout.js";
+
+test("legacy stored overlaps fall back to collision-free layout positions", () => {
+  const snapshot = {
+    entities: [
+      { id: "first", areaId: "area", parentId: "" },
+      { id: "second", areaId: "area", parentId: "" },
+    ],
+  };
+  const current = new Map([
+    ["first", { x: 100, y: 200, width: 120, height: 80 }],
+    ["second", { x: 120, y: 220, width: 120, height: 80 }],
+  ]);
+  const defaults = new Map([
+    ["first", { x: 100, y: 200, width: 120, height: 80 }],
+    ["second", { x: 420, y: 200, width: 120, height: 80 }],
+  ]);
+  const normalized = normalizeStoredEntityPositions(snapshot, current, defaults, new Map([
+    ["area", { x: 0, y: 0, width: 800, height: 600 }],
+  ]));
+  assert.deepEqual(normalized.get("first"), current.get("first"));
+  assert.deepEqual(normalized.get("second"), defaults.get("second"));
+});
+
+test("legacy children clear their container header and each other as whole subtrees", () => {
+  const snapshot = {
+    entities: [
+      { id: "group", areaId: "area", parentId: "" },
+      { id: "first", areaId: "area", parentId: "group" },
+      { id: "second", areaId: "area", parentId: "group" },
+    ],
+  };
+  const group = { x: 500, y: 200, width: 420, height: 520, headerWidth: 320, headerHeight: 76 };
+  const defaultGroup = { ...group, x: 100 };
+  const current = new Map([
+    ["group", group],
+    ["first", { x: 530, y: 220, width: 120, height: 80 }],
+    ["second", { x: 540, y: 230, width: 120, height: 80 }],
+  ]);
+  const defaults = new Map([
+    ["group", defaultGroup],
+    ["first", { x: 140, y: 330, width: 120, height: 80 }],
+    ["second", { x: 140, y: 490, width: 120, height: 80 }],
+  ]);
+  const normalized = normalizeStoredEntityPositions(snapshot, current, defaults, new Map([
+    ["area", { x: 0, y: 0, width: 900, height: 800 }],
+  ]));
+  const header = { x: group.x, y: group.y, width: group.headerWidth, height: group.headerHeight };
+  const overlap = (a, b, gap = 0) => a.x - gap < b.x + b.width && a.x + a.width + gap > b.x && a.y - gap < b.y + b.height && a.y + a.height + gap > b.y;
+  assert.equal(overlap(normalized.get("first"), header, 36), false);
+  assert.equal(overlap(normalized.get("second"), header, 36), false);
+  assert.equal(overlap(normalized.get("first"), normalized.get("second"), 36), false);
+  assert.equal(normalized.get("first").x, 540);
+  assert.equal(normalized.get("second").x, 540);
+});
 
 test("drop order uses the pointer only as an insertion index", () => {
   const items = [

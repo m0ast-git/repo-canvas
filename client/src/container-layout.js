@@ -1,6 +1,84 @@
+import { boundingRect, nodeRect } from "./drag-geometry.js";
+import { graphHierarchy } from "./graph-contract.js";
+
 export const CONTAINER_PADDING_X = 40;
 export const CONTAINER_PADDING_Y = 40;
 export const CONTAINER_ITEM_GAP = 76;
+
+function rectanglesOverlap(a, b, gap = 0) {
+  return a.x - gap < b.x + b.width
+    && a.x + a.width + gap > b.x
+    && a.y - gap < b.y + b.height
+    && a.y + a.height + gap > b.y;
+}
+
+export function normalizeStoredEntityPositions(snapshot, entityRects, defaultRects, areaRects, gap = 36) {
+  const output = new Map([...entityRects].map(([id, rect]) => [id, { ...rect }]));
+  const defaults = defaultRects || entityRects;
+  const byEntity = new Map((snapshot.entities || []).map((entity) => [entity.id, entity]));
+  const hierarchy = graphHierarchy(snapshot);
+
+  const subtreeIds = (id) => [id, ...(hierarchy.descendants.get(id) || [])];
+  const subtreeBounds = (rects, id) => boundingRect(subtreeIds(id).map((entityId) => rects.get(entityId)).filter(Boolean));
+  const moveSubtree = (id, dx, dy) => {
+    if (Math.abs(dx) < .01 && Math.abs(dy) < .01) return;
+    for (const entityId of subtreeIds(id)) {
+      const rect = output.get(entityId);
+      if (rect) output.set(entityId, { ...rect, x: rect.x + dx, y: rect.y + dy });
+    }
+  };
+
+  const normalizeSiblings = (ids, header = null, parentId = "") => {
+    for (const id of ids) {
+      const children = (hierarchy.direct.get(id) || []).filter((childId) => byEntity.has(childId));
+      if (!children.length) continue;
+      const parent = output.get(id);
+      normalizeSiblings(children, parent ? {
+        x: parent.x,
+        y: parent.y,
+        width: Math.max(280, Number(parent.headerWidth || parent.width || 0)),
+        height: Math.max(76, Number(parent.headerHeight || 0)),
+      } : null, id);
+    }
+
+    const obstacles = header ? [header] : [];
+    const currentBounds = ids.map((id) => ({ id, rect: subtreeBounds(output, id) }))
+      .filter((item) => item.rect.width && item.rect.height);
+    const invalid = currentBounds.some(({ rect }, index) => obstacles.some((obstacle) => rectanglesOverlap(rect, obstacle, gap))
+      || currentBounds.slice(0, index).some((previous) => rectanglesOverlap(rect, previous.rect, gap)));
+
+    if (invalid) {
+      const parent = parentId ? output.get(parentId) : null;
+      const defaultParent = parentId ? defaults.get(parentId) : null;
+      const offsetX = parent && defaultParent ? parent.x - defaultParent.x : 0;
+      const offsetY = parent && defaultParent ? parent.y - defaultParent.y : 0;
+      for (const { id, rect } of currentBounds) {
+        const fallback = subtreeBounds(defaults, id);
+        if (!fallback.width || !fallback.height) continue;
+        moveSubtree(id, fallback.x + offsetX - rect.x, fallback.y + offsetY - rect.y);
+      }
+    }
+
+  };
+
+  const topLevelByArea = new Map();
+  for (const entity of snapshot.entities || []) {
+    if (entity.kind === "person" || entity.parentId && byEntity.has(entity.parentId)) continue;
+    if (!topLevelByArea.has(entity.areaId)) topLevelByArea.set(entity.areaId, []);
+    topLevelByArea.get(entity.areaId).push(entity.id);
+  }
+  for (const [areaId, ids] of topLevelByArea) {
+    const area = areaRects?.get(areaId);
+    const header = area ? {
+      x: area.x + 18,
+      y: area.y + 14,
+      width: Math.max(0, Math.min(560, area.width - 36)),
+      height: 82,
+    } : null;
+    normalizeSiblings(ids, header);
+  }
+  return output;
+}
 
 function itemOrder(a, b) {
   return a.rect.y - b.rect.y || a.rect.x - b.rect.x || a.id.localeCompare(b.id);
@@ -212,5 +290,3 @@ export function hierarchyWithLayoutItems(snapshot, items) {
     entities: snapshot.entities.map((entity) => parents.has(entity.id) ? { ...entity, parentId: parents.get(entity.id) } : entity),
   }).descendants;
 }
-import { boundingRect, nodeRect } from "./drag-geometry.js";
-import { graphHierarchy } from "./graph-contract.js";

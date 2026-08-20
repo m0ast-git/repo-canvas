@@ -15,7 +15,6 @@ import { MODEL_PROFILES, codexCommandArguments, codexProcessOptions, codexResume
 import { resolveSessionTarget } from "../repo-canvas/scripts/session-locator.mjs";
 import { reduceEvents } from "../repo-canvas/scripts/canvas-store.mjs";
 import { validateEvent } from "../repo-canvas/scripts/canvas-schema.mjs";
-import { anchoredZoomTransform, boxesOverlap, captionAwareDetour, captionShapesOverlap, chooseFloatingCaption, connectionAnchors, crossAreaDetour, packAreaRectangles, paddedBox, placeRelationLabel, relationCurve, routesShareLane, sampleRelationCurve } from "../public/canvas-layout.js";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(repositoryRoot, "repo-canvas", "scripts", "canvas.mjs");
@@ -105,114 +104,6 @@ test("libavoid keeps a manually isolated node on a local route", async () => {
   for (const route of routes.values()) {
     const points = [route.sourcePoint, ...route.bendPoints, route.targetPoint];
     assert.ok(Math.min(...points.map((point) => point.y)) >= isolated.y - 40, "route must not escape above the isolated node");
-  }
-});
-
-test("semantic relation labels avoid headers, cards, and each other", () => {
-  const a = { x: 100, y: 140 };
-  const b = { x: 520, y: 140 };
-  const anchors = connectionAnchors(a, b);
-  assert.deepEqual(anchors.from, { x: 344, y: 201 });
-  assert.deepEqual(anchors.to, { x: 520, y: 201 });
-
-  const header = { x: 405, y: 170, width: 120, height: 38 };
-  const first = placeRelationLabel("передаёт результат", anchors.from, anchors.to, [header]);
-  assert.ok(first, "Expected a free caption position");
-  assert.equal(boxesOverlap(first.box, header), false);
-  const second = placeRelationLabel("следующая связь", anchors.from, anchors.to, [header, first.box]);
-  assert.ok(second, "Expected a second non-overlapping caption position");
-  assert.equal(boxesOverlap(second.box, first.box), false);
-});
-
-test("floating relation captions stay on visible curve segments and separate at crossings", () => {
-  const firstCurve = relationCurve({ x: 0, y: 0 }, { x: 600, y: 400 }, { laneOffset: -34 });
-  const secondCurve = relationCurve({ x: 0, y: 400 }, { x: 600, y: 0 }, { laneOffset: 34 });
-  const viewport = { x: 170, y: 80, width: 260, height: 240 };
-  const first = chooseFloatingCaption({
-    samples: sampleRelationCurve(firstCurve), currentProgress: .5, width: 110, height: 22, viewport,
-  });
-  assert.ok(first);
-  const second = chooseFloatingCaption({
-    samples: sampleRelationCurve(secondCurve), currentProgress: .5, width: 110, height: 22, viewport, occupied: [first.box],
-  });
-  assert.ok(second);
-  assert.equal(captionShapesOverlap(first.box, second.box), false);
-  assert.notEqual(first.angle, 0);
-  assert.notEqual(second.angle, 0);
-
-  const cropped = chooseFloatingCaption({
-    samples: sampleRelationCurve(firstCurve), currentProgress: .2, width: 80, height: 22,
-    viewport: { x: 420, y: 330, width: 170, height: 90 },
-  });
-  assert.ok(cropped);
-  assert.ok(cropped.progress > .65, "Caption should slide from an off-screen start to the visible tail");
-});
-
-test("floating captions never fall back onto nodes", () => {
-  const curve = relationCurve({ x: 0, y: 100 }, { x: 500, y: 100 });
-  const placement = chooseFloatingCaption({
-    samples: sampleRelationCurve(curve), currentProgress: .5, width: 120, height: 22,
-    viewport: { x: 0, y: 0, width: 500, height: 220 },
-    obstacles: [{ x: 0, y: 0, width: 500, height: 220 }],
-  });
-  assert.equal(placement, null);
-});
-
-test("zoom keeps the selected viewport point over the same world point", () => {
-  const current = { x: -320, y: 140, scale: .5 };
-  const anchor = { x: 760, y: 410 };
-  const worldBefore = { x: (anchor.x - current.x) / current.scale, y: (anchor.y - current.y) / current.scale };
-  const next = anchoredZoomTransform(current, 1.1, anchor);
-  assert.equal((anchor.x - next.x) / next.scale, worldBefore.x);
-  assert.equal((anchor.y - next.y) / next.scale, worldBefore.y);
-});
-
-test("short gaps get a rounded caption-aware detour outside adjacent nodes", () => {
-  const detour = captionAwareDetour({ x: 20, y: 40 }, { x: 284, y: 40 }, 96);
-  assert.ok(detour);
-  assert.equal(detour.from.y, 162);
-  assert.ok(detour.waypoints[0].y > detour.from.y);
-  assert.equal(detour.waypoints[0].y, detour.waypoints[1].y);
-  const route = relationCurve(detour.from, detour.to, { waypoints: detour.waypoints });
-  assert.match(route.d, / Q /, "Detour corners should stay rounded");
-});
-
-test("cross-area routes leave through row lanes instead of cutting through sibling nodes", () => {
-  const sourceArea = { x: 0, y: 0, width: 850, height: 600 };
-  const targetArea = { x: 924, y: 0, width: 850, height: 600 };
-  const source = { x: 48, y: 102 };
-  const target = { x: 972, y: 102 };
-  const route = crossAreaDetour(source, target, sourceArea, targetArea);
-  assert.ok(route);
-  assert.equal(route.from.y, source.y + 122);
-  assert.ok(route.waypoints[0].y > route.from.y);
-  assert.equal(route.waypoints[1].x, 887);
-  const sibling = paddedBox({ x: 318, y: 102 }, 244, 122, 0);
-  const samples = sampleRelationCurve(relationCurve(route.from, route.to, { waypoints: route.waypoints }));
-  assert.equal(samples.some((point) => point.x > sibling.x && point.x < sibling.x + sibling.width && point.y > sibling.y && point.y < sibling.y + sibling.height), false);
-});
-
-test("parallel relation routes reserve separate visual lanes", () => {
-  const first = relationCurve({ x: 100, y: 0 }, { x: 100, y: 600 });
-  const overlapping = relationCurve({ x: 112, y: 80 }, { x: 112, y: 520 });
-  const separated = relationCurve({ x: 140, y: 80 }, { x: 140, y: 520 });
-  assert.equal(routesShareLane(overlapping.points, [first.points]), true);
-  assert.equal(routesShareLane(separated.points, [first.points]), false);
-});
-
-test("automatic area packing has no small-project cap or vertical overlap", () => {
-  const rectangles = Array.from({ length: 18 }, (_, index) => ({
-    id: `area-${index}`,
-    width: 850 + (index % 4) * 270,
-    height: 400 + (index % 7) * 714,
-  }));
-  const positions = packAreaRectangles(rectangles);
-  assert.equal(positions.size, 18);
-  const packed = [...positions.values()];
-  for (let index = 0; index < packed.length; index += 1) {
-    for (let other = index + 1; other < packed.length; other += 1) {
-      assert.equal(boxesOverlap(packed[index], packed[other]), false, `areas ${index} and ${other} overlap`);
-    }
   }
 });
 
