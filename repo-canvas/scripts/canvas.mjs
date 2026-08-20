@@ -99,6 +99,7 @@ Commands:
 Global options:
   --root <path>  Explicit repository root
   --port <port>  Server port for start (default 4173)
+  --language <tag>  Language for human-visible Canvas text (for example ru or en)
   --no-open      Do not open the Canvas in the default browser
 
 Examples:
@@ -109,8 +110,8 @@ Examples:
   repo-canvas entity --id search --area knowledge --label "Standards search" --status operational --path src/search
   repo-canvas relation --from search --to registry --label "reads"
   repo-canvas work --id improve-search --title "Improve matching" --targets search --status active --actor codex
-  repo-canvas setup
-  repo-canvas architect --refresh
+  repo-canvas setup --language ru
+  repo-canvas architect --refresh --language ru
   repo-canvas observer status
 `);
 }
@@ -150,6 +151,7 @@ if (args.root === true) {
       const { runArchitect } = await import("./architect.mjs");
       const result = await runArchitect({
         refresh: Boolean(args.refresh),
+        language: args.language && args.language !== true ? String(args.language) : undefined,
         model: args.model && args.model !== true ? String(args.model) : undefined,
         effort: args.effort && args.effort !== true ? String(args.effort) : undefined,
       });
@@ -170,6 +172,7 @@ if (args.root === true) {
       if (!getSnapshot().semantic || args.refresh) {
         architect = await runArchitect({
           refresh: Boolean(args.refresh),
+          language: args.language && args.language !== true ? String(args.language) : undefined,
           model: args.model && args.model !== true ? String(args.model) : undefined,
           effort: args.effort && args.effort !== true ? String(args.effort) : undefined,
         });
@@ -210,6 +213,7 @@ if (args.root === true) {
         emit("map.upsert", args.actor || "unknown", {
           projectTitle: required(args, "title"),
           projectSummary: args.summary || "",
+          language: args.language && args.language !== true ? String(args.language) : undefined,
           layoutIntent: args.layout || "domain",
           layoutDirection: args.direction || "AUTO",
           keyFlows: list(args.flows),

@@ -38,7 +38,9 @@ Work in this order before producing output:
 
 Language contract:
 - every human-visible area title/note, entity label/purpose/note, relation label, key-flow title/trigger/outcome and unresolved question uses one consistent language;
-- a non-empty owner viewpoint is the strongest language signal; otherwise use the language of user-facing product text and primary project documentation;
+- build and update the Canvas in the language used by the owner in the current dialogue; a non-empty owner viewpoint is the strongest language signal;
+- preserve the original spelling only for official product, technology, library, protocol, file, command and code-identifier names; do not mix languages merely for brevity or technical tone;
+- when the current request has no usable language signal, use the explicitly requested setup language, then the stored map language, then user-facing product text and primary project documentation;
 - code identifiers, filenames, protocol names and contract names may remain technical, but do not turn them into unexplained user-visible jargon;
 - write for the repository owner: prefer plain domain language over framework slang, abbreviations and architecture terminology the project itself does not explain.
 - clarity and exact responsibility beat artificial brevity: do not compress a meaningful role into a cryptic noun phrase just to keep a label short;
@@ -101,10 +103,19 @@ function sameIds(before, after, field) {
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-export function preferredMapLanguage(viewpoint = "", snapshot = { map: {}, areas: [], entities: [], relations: [] }, repositoryText = "") {
+export function normalizeLanguageTag(value) {
+  const normalized = String(value || "").trim().replaceAll("_", "-").toLowerCase();
+  return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(normalized) ? normalized : null;
+}
+
+export function preferredMapLanguage(viewpoint = "", snapshot = { map: {}, areas: [], entities: [], relations: [] }, repositoryText = "", requestedLanguage = "") {
   const explicit = String(viewpoint || "").trim();
   if ((explicit.match(/[А-Яа-яЁё]/g) || []).length >= 2) return "ru";
   if (!/[А-Яа-яЁё]/.test(explicit) && (explicit.match(/[A-Za-z]/g) || []).length >= 4) return "en";
+  const requested = normalizeLanguageTag(requestedLanguage);
+  if (requested) return requested;
+  const stored = normalizeLanguageTag(snapshot.map?.language);
+  if (stored) return stored;
   const current = [
     snapshot.map?.projectTitle, snapshot.map?.projectSummary,
     ...snapshot.areas.flatMap((item) => [item.ownerTitle || item.title, item.ownerNote || item.note]),
@@ -428,6 +439,7 @@ export async function runArchitect({
   root = projectRoot,
   refresh = false,
   viewpoint = "",
+  language: requestedLanguage = "",
   model,
   effort,
   runner = runCodexStructured,
@@ -439,7 +451,8 @@ export async function runArchitect({
 } = {}) {
   const audit = createArchitectAudit(root);
   const snapshot = getSnapshot();
-  const language = preferredMapLanguage(viewpoint, snapshot, repositoryLanguageSample(root));
+  if (requestedLanguage && !normalizeLanguageTag(requestedLanguage)) throw new Error(`Invalid language tag '${requestedLanguage}'; use a BCP 47 tag such as ru, en or de-DE`);
+  const language = preferredMapLanguage(viewpoint, snapshot, repositoryLanguageSample(root), requestedLanguage);
   const profile = {
     model: model || MODEL_PROFILES.architect.model,
     effort: effort || MODEL_PROFILES.architect.effort,
@@ -558,7 +571,7 @@ export async function runArchitect({
       }
     }
     onProgress?.({ phase: "applying", attempt: repairs + acceptanceRepairs, at: new Date().toISOString() });
-    const applied = applyArchitecture(value, { actor: "architect", refresh });
+    const applied = applyArchitecture(value, { actor: "architect", refresh, language });
     const output = {
       provider: "codex", model: result.profile?.model || profile.model, effort: result.profile?.effort || profile.effort,
       threadId: result.threadId, threadIds: [...new Set(threadIds)], reviewThreadIds: [...new Set(reviewThreadIds)],

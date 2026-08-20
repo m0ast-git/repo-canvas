@@ -44,6 +44,10 @@ function record(type, payload) {
   return JSON.stringify({ timestamp: new Date().toISOString(), type, payload });
 }
 
+function timedRecord(timestamp, type, payload) {
+  return JSON.stringify({ timestamp, type, payload });
+}
+
 function append(file, lines) {
   fs.appendFileSync(file, `${lines.join("\n")}\n`);
 }
@@ -55,6 +59,7 @@ test("large Codex metadata lines and repository filtering remain reliable", () =
   append(file, [record("session_meta", { id: "large-session", cwd: root, originator: "codex_desktop", padding: "x".repeat(130_000) })]);
   const meta = sessions.readSessionMeta(file);
   assert.equal(meta.id, "large-session");
+  assert.ok(meta.recordTimestamp);
   assert.equal(sessions.sessionBelongsToRepository(meta, root), true);
   assert.equal(sessions.sessionBelongsToRepository({ ...meta, originator: "codex_sdk_ts" }, root), false);
   assert.equal(sessions.sessionBelongsToRepository({ ...meta, originator: "repo_canvas" }, root), false);
@@ -229,6 +234,80 @@ test("observer stops a turn that has no fresh public signal", async () => {
   assert.equal(observer.summary().activeTurns, 0);
 });
 
+test("forked Codex journals ignore copied parent history and terminal state cannot reopen", async () => {
+  const forkRoot = path.join(sessionsRoot, "fork-fixture");
+  fs.mkdirSync(forkRoot, { recursive: true });
+  const parentFile = path.join(forkRoot, "rollout-parent.jsonl");
+  const childFile = path.join(forkRoot, "rollout-child.jsonl");
+  const beforeFork = "2026-08-20T10:00:00.000Z";
+  const forkedAt = "2026-08-20T10:05:00.000Z";
+  const afterFork = "2026-08-20T10:05:01.000Z";
+  append(parentFile, [
+    timedRecord(beforeFork, "session_meta", { id: "fork-parent", session_id: "fork-parent", cwd: root, originator: "codex_desktop" }),
+    timedRecord(beforeFork, "event_msg", { type: "task_started", turn_id: "parent-turn" }),
+    timedRecord(beforeFork, "event_msg", { type: "user_message", message: "Parent task" }),
+  ]);
+  append(childFile, [
+    timedRecord(forkedAt, "session_meta", { id: "fork-child", session_id: "fork-parent", parent_thread_id: "fork-parent", forked_from_id: "parent-message", thread_source: "subagent", timestamp: forkedAt, cwd: root, originator: "codex_desktop" }),
+    timedRecord(forkedAt, "session_meta", { id: "fork-parent", session_id: "fork-parent", cwd: root, originator: "codex_desktop" }),
+    timedRecord(afterFork, "event_msg", { type: "task_started", turn_id: "parent-turn" }),
+    timedRecord(afterFork, "event_msg", { type: "user_message", message: "Copied parent task" }),
+    timedRecord(afterFork, "event_msg", { type: "thread_settings_applied" }),
+    timedRecord(afterFork, "event_msg", { type: "task_started", turn_id: "child-turn" }),
+    timedRecord(afterFork, "event_msg", { type: "user_message", message: "Исправь карточку агента" }),
+    timedRecord("2026-08-20T10:05:02.000Z", "event_msg", { type: "turn_aborted", turn_id: "child-turn", reason: "interrupted" }),
+  ]);
+  const observer = new CodexObserver({
+    config: { enabled: true, repoRoot: root, providers: ["codex"], pollMs: 250 },
+    state: { version: 4, initializedProviders: [], sessions: {} }, sessionsRoot: forkRoot, replay: true,
+    runner: async () => ({ value: { workTitle: "Уточнённая карточка", workSummary: "Сессия остановлена", workStatus: "active", targetEntityIds: [], entityChanges: [], relationChanges: [] } }),
+    writeState: () => {},
+  });
+  await observer.tick();
+  const childSession = Object.values(observer.state.sessions).find((session) => session.meta.id === "fork-child");
+  assert.deepEqual(Object.keys(childSession.turns), ["child-turn"]);
+  assert.equal(childSession.forkHistoryComplete, true);
+  assert.equal(childSession.skippingInheritedHistory, false);
+  const childWork = store.getSnapshot().work.find((work) => work.id === childSession.turns["child-turn"].workId);
+  assert.equal(childWork.status, "stopped");
+  assert.equal(childWork.title, "Уточнённая карточка");
+});
+
+test("forked journals fail closed when a copied start has no timestamp", () => {
+  const observer = new CodexObserver({ adapters: [], writeState: () => {} });
+  const parent = { relevant: true, meta: { id: "missing-time-parent" }, turns: { copied: { turnId: "copied" } } };
+  const child = { relevant: true, meta: { id: "missing-time-child", session_id: "missing-time-parent", parent_thread_id: "missing-time-parent", thread_source: "subagent" }, turns: {} };
+  observer.state.sessions = { parent, child };
+  assert.equal(observer.acceptsRecord(child, { type: "event_msg", payload: { type: "task_started" } }), true, "older fork journals without a copied meta block stay readable");
+  assert.equal(observer.acceptsSignal(child, { type: "event_msg", payload: {} }, { kind: "start", turnId: "copied" }), false);
+  assert.equal(observer.acceptsSignal(child, { type: "event_msg", payload: {} }, { kind: "start", turnId: "unknown" }), false);
+});
+
+test("a late active classification cannot reopen a turn after completion", async () => {
+  let release;
+  const pendingResult = new Promise((resolve) => { release = resolve; });
+  const observer = new CodexObserver({
+    config: { enabled: true, repoRoot: root, providers: ["codex"], pollMs: 250 },
+    adapters: [], writeState: () => {},
+    runner: async () => pendingResult,
+    state: { version: 4, initializedProviders: ["codex"], sessions: {
+      race: { relevant: true, provider: "codex", meta: { id: "race-session", cwd: root }, turns: {} },
+    } },
+  });
+  const session = observer.state.sessions.race;
+  observer.handleSignal(session, { kind: "start", turnId: "race-turn" });
+  observer.handleSignal(session, { kind: "agent", text: "Working" });
+  const inference = observer.runDue();
+  await new Promise((resolve) => setImmediate(resolve));
+  observer.handleSignal(session, { kind: "complete", turnId: "race-turn" });
+  release({ value: { workTitle: "Late active answer", workSummary: "Should stay terminal", workStatus: "active", targetEntityIds: [], entityChanges: [], relationChanges: [] } });
+  await inference;
+  const turn = session.turns["race-turn"];
+  const work = store.getSnapshot().work.find((item) => item.id === turn.workId);
+  assert.equal(work.status, "done");
+  assert.equal(turn.finalPending, true, "completion enrichment must still run on the next poll");
+});
+
 test("architect rejects relations to entities removed by the same refresh", () => {
   assert.throws(() => semantic.validateArchitecture({
     projectTitle: "Fixture", projectSummary: "",
@@ -256,8 +335,9 @@ test("architect emits a DDD hierarchy, explanatory contracts, key flows, and map
     relations: [{ id: "checkout-to-fulfilment", from: "checkout", to: "fulfilment", label: "publishes accepted order", kind: "event", contract: "AcceptedOrder v1", mechanism: "event bus", evidence: ["src/contracts/accepted-order.ts"], status: "existing" }],
     removedAreaIds: [], removedEntityIds: [], removedRelationIds: [],
   };
-  const events = semantic.architectureEvents(model, { actor: "architect-test" });
+  const events = semantic.architectureEvents(model, { actor: "architect-test", language: "en" });
   assert.equal(events[0].type, "map.upsert");
+  assert.equal(events[0].payload.language, "en");
   assert.deepEqual(events[0].payload.keyFlows[0].steps, ["sales", "checkout", "fulfilment"]);
   assert.ok(events.findIndex((event) => event.payload.id === "sales") < events.findIndex((event) => event.payload.id === "checkout"));
   assert.equal(events.find((event) => event.type === "relation.upsert").payload.label, "publishes accepted order");
@@ -512,6 +592,9 @@ test("architect language gate rejects mixed owner-facing jargon but keeps techni
   assert.ok(!issues.some((item) => item.includes("entity.reviewer.purpose")), "single technical product names stay valid inside Russian wording");
   assert.equal(architect.preferredMapLanguage("Покажи карту владельцу", store.getSnapshot()), "ru");
   assert.equal(architect.preferredMapLanguage("", { map: {}, areas: [], entities: [], relations: [] }, "Русская документация проекта содержит достаточно текста для определения языка.".repeat(4)), "ru");
+  assert.equal(architect.preferredMapLanguage("", { map: { language: "de-DE" }, areas: [], entities: [], relations: [] }, "English repository text".repeat(20), "en"), "en");
+  assert.equal(architect.preferredMapLanguage("Покажи по-русски", { map: { language: "de" }, areas: [], entities: [], relations: [] }, "", "en"), "ru");
+  assert.equal(architect.normalizeLanguageTag("DE_de"), "de-de");
 });
 
 test("completed observer work may remain provisional when no semantic target was established", () => {

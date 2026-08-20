@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { persistentRouteLabel, routesForTier, sharedTrunkRoutes } from "../client/src/route-presentation.js";
+import { persistentRouteLabel, routesForTier, routeVisualKind, sharedTrunkRoutes } from "../client/src/route-presentation.js";
 
 test("route selection never depends on endpoint viewport visibility", () => {
   const areaRoutes = [{ id: "area-offscreen" }];
@@ -21,6 +21,12 @@ test("a relation label stays visible whenever collision placement is safe", () =
   assert.equal(persistentRouteLabel(route, { safe: true }), true);
   assert.equal(persistentRouteLabel(route, { safe: false }), false);
   assert.equal(persistentRouteLabel({ label: "" }, { safe: true }), false);
+});
+
+test("line semantics distinguish confirmed, planned and live work routes", () => {
+  assert.equal(routeVisualKind({ type: "relation", status: "existing" }), "confirmed");
+  assert.equal(routeVisualKind({ type: "relation", status: "planned" }), "planned");
+  assert.equal(routeVisualKind({ type: "work", status: "active" }), "live-work");
 });
 
 test("compatible binary relations receive a short selectable shared trunk", () => {

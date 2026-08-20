@@ -356,6 +356,7 @@ export function reduceEvents(events, errors = []) {
     map: map || {
       projectTitle: projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || "Project",
       projectSummary: "",
+      language: "",
       layoutIntent: "domain",
       layoutDirection: "AUTO",
       keyFlows: [],

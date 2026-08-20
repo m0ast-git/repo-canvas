@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  buildSearchItems, focusForSelection, offscreenChip, routeMatchesFocus,
-  routeSelection, screenTextReadable, searchCanvas, selectionKey,
+  buildSearchItems, focusForSelection, OFFSCREEN_CHIP_SIZE, offscreenChip, routeMatchesFocus,
+  routeSelection, screenTextReadable, searchCanvas, selectionKey, spreadOffscreenChips,
 } from "../client/src/interaction-model.js";
 
 const entities = new Map([
@@ -52,7 +52,22 @@ test("search ranks exact and prefix matches across areas, entities and work", ()
 test("off-screen chips project targets to the nearest viewport edge", () => {
   const viewport = { x: 0, y: 0, zoom: 1 };
   const size = { width: 800, height: 600 };
-  assert.equal(offscreenChip(viewport, size, { x: 1000, y: 280, width: 20, height: 20 }).side, "right");
-  assert.equal(offscreenChip(viewport, size, { x: 390, y: -200, width: 20, height: 20 }).side, "top");
+  const right = offscreenChip(viewport, size, { x: 1000, y: 280, width: 20, height: 20 });
+  const top = offscreenChip(viewport, size, { x: 390, y: -200, width: 20, height: 20 });
+  assert.equal(right.side, "right");
+  assert.equal(right.x - OFFSCREEN_CHIP_SIZE.width, size.width - OFFSCREEN_CHIP_SIZE.margin - OFFSCREEN_CHIP_SIZE.width);
+  assert.ok(right.y >= OFFSCREEN_CHIP_SIZE.margin + OFFSCREEN_CHIP_SIZE.height / 2);
+  assert.equal(top.side, "top");
+  assert.ok(top.x >= OFFSCREEN_CHIP_SIZE.margin + OFFSCREEN_CHIP_SIZE.width / 2);
   assert.equal(offscreenChip(viewport, size, { x: 390, y: 280, width: 20, height: 20 }), null);
+});
+
+test("off-screen mini-nodes spread along a shared edge without overlapping", () => {
+  const spread = spreadOffscreenChips([
+    { id: "a", side: "left", x: 12, y: 200 },
+    { id: "b", side: "left", x: 12, y: 204 },
+  ], { width: 800, height: 600 });
+  assert.ok(spread[1].y - spread[0].y >= OFFSCREEN_CHIP_SIZE.height + 8);
+  assert.ok(spread[0].y >= OFFSCREEN_CHIP_SIZE.margin + OFFSCREEN_CHIP_SIZE.height / 2);
+  assert.ok(spread[1].y <= 600 - OFFSCREEN_CHIP_SIZE.margin - OFFSCREEN_CHIP_SIZE.height / 2);
 });

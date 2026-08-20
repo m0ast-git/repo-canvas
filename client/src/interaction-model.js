@@ -135,7 +135,14 @@ export function searchCanvas(items, query, limit = 12) {
     .slice(0, limit).map(({ item }) => item);
 }
 
-export function offscreenChip(viewport, size, rect, margin = 24) {
+export const OFFSCREEN_CHIP_SIZE = Object.freeze({ width: 176, height: 42, margin: 12 });
+
+function clampChip(value, minimum, maximum, fallback) {
+  if (minimum > maximum) return fallback;
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+export function offscreenChip(viewport, size, rect, margin = OFFSCREEN_CHIP_SIZE.margin) {
   if (!rect || !size?.width || !size?.height || !viewport?.zoom) return null;
   const centre = {
     x: (rect.x + rect.width / 2) * viewport.zoom + viewport.x,
@@ -147,7 +154,41 @@ export function offscreenChip(viewport, size, rect, margin = 24) {
   const sx = Math.abs(dx) < .001 ? Number.POSITIVE_INFINITY : (size.width / 2 - margin) / Math.abs(dx);
   const sy = Math.abs(dy) < .001 ? Number.POSITIVE_INFINITY : (size.height / 2 - margin) / Math.abs(dy);
   const scale = Math.min(sx, sy);
-  const x = viewportCentre.x + dx * scale; const y = viewportCentre.y + dy * scale;
+  const projectedX = viewportCentre.x + dx * scale; const projectedY = viewportCentre.y + dy * scale;
   const side = scale === sx ? dx < 0 ? "left" : "right" : dy < 0 ? "top" : "bottom";
-  return { x, y, side };
+  const halfWidth = OFFSCREEN_CHIP_SIZE.width / 2; const halfHeight = OFFSCREEN_CHIP_SIZE.height / 2;
+  if (side === "left" || side === "right") return {
+    x: side === "left" ? margin : size.width - margin,
+    y: clampChip(projectedY, margin + halfHeight, size.height - margin - halfHeight, viewportCentre.y),
+    side,
+  };
+  return {
+    x: clampChip(projectedX, margin + halfWidth, size.width - margin - halfWidth, viewportCentre.x),
+    y: side === "top" ? margin : size.height - margin,
+    side,
+  };
+}
+
+export function spreadOffscreenChips(chips, size, gap = 8) {
+  const output = new Map((chips || []).map((chip) => [chip.id, { ...chip }]));
+  for (const side of ["left", "right", "top", "bottom"]) {
+    const horizontal = side === "top" || side === "bottom";
+    const axis = horizontal ? "x" : "y";
+    const extent = horizontal ? OFFSCREEN_CHIP_SIZE.width : OFFSCREEN_CHIP_SIZE.height;
+    const limit = horizontal ? size?.width : size?.height;
+    if (!limit) continue;
+    const minimum = OFFSCREEN_CHIP_SIZE.margin + extent / 2;
+    const maximum = limit - OFFSCREEN_CHIP_SIZE.margin - extent / 2;
+    const step = extent + gap;
+    const group = [...output.values()].filter((chip) => chip.side === side).sort((a, b) => a[axis] - b[axis]);
+    let previous = Number.NEGATIVE_INFINITY;
+    for (const chip of group) {
+      chip[axis] = Math.max(minimum, chip[axis], previous + step);
+      previous = chip[axis];
+    }
+    const overflow = group.at(-1)?.[axis] - maximum;
+    if (overflow > 0) for (const chip of group) chip[axis] -= overflow;
+    for (let index = 1; index < group.length; index += 1) group[index][axis] = Math.max(group[index][axis], group[index - 1][axis] + step);
+  }
+  return (chips || []).map((chip) => output.get(chip.id));
 }

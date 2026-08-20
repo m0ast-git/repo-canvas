@@ -10,6 +10,12 @@ export function persistentRouteLabel(route, placement) {
   return Boolean(route?.label && placement?.safe);
 }
 
+export function routeVisualKind(route) {
+  if (route?.type === "work") return "live-work";
+  if (route?.status === "planned") return "planned";
+  return "confirmed";
+}
+
 function initialDirection(route) {
   const start = route?.points?.[0]; const next = route?.points?.find((point, index) => index > 0 && (Math.abs(point.x - start.x) > .01 || Math.abs(point.y - start.y) > .01));
   if (!start || !next) return null;

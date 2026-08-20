@@ -105,6 +105,7 @@ export function validateEvent(event) {
   if (event.type === "map.upsert") {
     requireString(errors, payload.projectTitle, "payload.projectTitle", { max: 240 });
     optionalString(errors, payload.projectSummary, "payload.projectSummary", 4000);
+    optionalString(errors, payload.language, "payload.language", 32);
     if (payload.layoutIntent !== undefined) requireStatus(errors, payload.layoutIntent, "payload.layoutIntent", new Set(["flow", "hierarchy", "core", "domain", "clustered", "hybrid"]));
     if (payload.layoutDirection !== undefined) requireStatus(errors, payload.layoutDirection, "payload.layoutDirection", new Set(["RIGHT", "DOWN", "AUTO"]));
     if (payload.keyFlows !== undefined && !Array.isArray(payload.keyFlows)) errors.push("payload.keyFlows must be an array");

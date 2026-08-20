@@ -17,7 +17,7 @@ The agent will follow [`INSTALL_WITH_AGENT.txt`](INSTALL_WITH_AGENT.txt). The ex
 
 ```text
 npm install --save-dev --save-exact --ignore-scripts github:m0ast-git/repo-canvas#v0.12.0
-npx --no-install repo-canvas setup
+npx --no-install repo-canvas setup --language en
 npm run repo-canvas:start
 ```
 
@@ -50,7 +50,7 @@ Dragging empty canvas space always moves the camera, including the empty interio
 
 ## How it works
 
-`setup` checks the local Codex connection, then runs a read-only Architect with `gpt-5.6-sol` at medium reasoning. Architect inventories current repository truth once, identifies responsibility boundaries and builds the map in the owner's working language. Its isolated headless session stays available for the whole acceptance cycle: every structural correction and reviewer response resumes the same Sol thread instead of starting another repository inspection. Human-visible labels explain the product instead of copying unexplained code jargon. A human role appears only when the product genuinely involves that participant; it stays outside project-owned areas and is connected to the exact responsibility it touches.
+`setup` checks the local Codex connection, then runs a read-only Architect with `gpt-5.6-sol` at medium reasoning. Pass the current dialogue language with `--language <BCP-47 tag>`; a current refresh instruction may override it, and otherwise the stored map language is reused. Architect inventories current repository truth once, identifies responsibility boundaries and builds the map in that owner language. Its isolated headless session stays available for the whole acceptance cycle: every structural correction and reviewer response resumes the same Sol thread instead of starting another repository inspection. Human-visible labels explain the product instead of copying unexplained code jargon. A human role appears only when the product genuinely involves that participant; it stays outside project-owned areas and is connected to the exact responsibility it touches.
 
 Before anything is written, Repo Canvas validates area membership, hierarchy, evidence paths, relation endpoints, removal references, participant placement and every end-to-end flow step. If the model returns an inconsistent cross-reference, the exact error returns to the same Sol session through a bounded repair using an explicit enum of allowed ids. A separate `gpt-5.6-luna` reviewer sees only the proposed map and answers what the project does, how it is divided and how its main lifecycle works. Each critical issue must point to an exact existing map id. Sol may refine that area and its necessary adjacent relations, while deterministic scope checks prevent changes to unrelated areas. The reviewer repeats until the map passes or the bounded focused-repair limit is exhausted; an incomprehensible result is never applied.
 
@@ -92,7 +92,7 @@ Manual commands:
 
 ```text
 npm install --save-dev --save-exact --ignore-scripts ./repo-canvas-0.12.0.tgz
-npx --no-install repo-canvas setup
+npx --no-install repo-canvas setup --language en
 npm run repo-canvas:start
 ```
 
@@ -100,7 +100,7 @@ npm run repo-canvas:start
 
 ```text
 npm run repo-canvas -- doctor
-npm run repo-canvas -- architect --refresh
+npm run repo-canvas -- architect --refresh --language en
 npm run repo-canvas -- observer status
 npm run repo-canvas -- observer disable
 npm run repo-canvas -- observer enable

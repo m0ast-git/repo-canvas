@@ -17,7 +17,7 @@ export const STALE_TURN_MS = 15 * 60_000;
 
 export function compactSessionMeta(meta = {}) {
   const compact = {};
-  for (const key of ["id", "session_id", "cwd", "originator", "provider", "entrypoint", "promptSource"]) {
+  for (const key of ["id", "session_id", "cwd", "originator", "provider", "entrypoint", "promptSource", "thread_source", "forked_from_id", "parent_thread_id", "timestamp", "recordTimestamp"]) {
     if (["string", "number", "boolean"].includes(typeof meta[key])) compact[key] = meta[key];
   }
   if (typeof meta.title === "string") compact.title = meta.title.slice(0, 160);
@@ -30,14 +30,15 @@ export function compactObserverState(state = {}) {
   for (const [file, session] of Object.entries(state.sessions || {})) {
     const turns = Object.values(session.turns || {}).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
     const keptTurns = [...turns.filter((turn) => !turn.finished), ...turns.filter((turn) => turn.finished).slice(0, 24)];
+    const { scanSucceeded: _scanSucceeded, ...persistentSession } = session;
     sessions[file] = {
-      ...session,
+      ...persistentSession,
       meta: compactSessionMeta(session.meta),
       turns: Object.fromEntries(keptTurns.map((turn) => [turn.turnId, turn])),
     };
   }
   return {
-    version: 3,
+    version: 4,
     initializedProviders: [...new Set(state.initializedProviders || [])],
     sessions,
     ...(state.updatedAt ? { updatedAt: state.updatedAt } : {}),
@@ -52,7 +53,7 @@ function workId(sessionId, turnId) {
 
 function compactMap(snapshot) {
   return {
-    map: { projectTitle: snapshot.map?.projectTitle, projectSummary: snapshot.map?.projectSummary, keyFlows: snapshot.map?.keyFlows || [] },
+    map: { projectTitle: snapshot.map?.projectTitle, projectSummary: snapshot.map?.projectSummary, language: snapshot.map?.language, keyFlows: snapshot.map?.keyFlows || [] },
     areas: snapshot.areas.map(({ id, title, note, ownerTitle, ownerNote }) => ({ id, title, note, ownerTitle, ownerNote })),
     entities: snapshot.entities.map(({ id, areaId, parentId, label, kind, status, purpose, evidence, ownerLabel, ownerPurpose }) => ({ id, areaId, parentId, label, kind, status, purpose, evidence, ownerLabel, ownerPurpose })),
     relations: snapshot.relations.map(({ id, from, to, label, kind, contract, mechanism, status, ownerLabel }) => ({ id, from, to, label, kind, contract, mechanism, status, ownerLabel })),
@@ -89,16 +90,23 @@ Current semantic map: ${JSON.stringify(compactMap(snapshot))}
 New public events: ${JSON.stringify(turn.events)}`;
 }
 
-function provisionalWork(turn, meta, adapter) {
-  const russian = /[А-Яа-яЁё]/.test(turn.userMessage || "");
+function provisionalCopy(language = "", text = "") {
+  const russian = /[А-Яа-яЁё]/.test(text) || /^ru(?:-|$)/i.test(language);
+  return russian
+    ? { title: "Новая работа", note: "Агент осмысливает задачу" }
+    : { title: "New work", note: "The agent is interpreting the request" };
+}
+
+function provisionalWork(turn, meta, adapter, language = "") {
+  const copy = provisionalCopy(language, turn.userMessage);
   appendEvent(createEvent("work.upsert", {
     actor: "observer",
     payload: {
       id: turn.workId,
-      title: russian ? "Новая работа" : "New work",
+      title: copy.title,
       status: "active",
       targets: [],
-      note: russian ? "Агент осмысливает задачу" : "The agent is interpreting the request",
+      note: copy.note,
       provisional: true,
       session: adapter.locator(meta),
     },
@@ -114,6 +122,22 @@ function staleWorkCopy(...values) {
   return russian
     ? { title: "Работа без свежего сигнала", note: "Сессия не подтверждала активность более 15 минут" }
     : { title: "Work without a fresh signal", note: "The session has not confirmed activity for more than 15 minutes" };
+}
+
+function forkBoundary(meta = {}) {
+  const value = meta.recordTimestamp || meta.timestamp;
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isForkedSession(session) {
+  const meta = session?.meta || {};
+  return meta.thread_source === "subagent" || Boolean(meta.parent_thread_id || meta.forked_from_id);
+}
+
+function parentSessionId(session) {
+  const meta = session?.meta || {};
+  return meta.parent_thread_id || (meta.session_id && meta.session_id !== meta.id ? meta.session_id : "");
 }
 
 export class CodexObserver {
@@ -164,6 +188,7 @@ export class CodexObserver {
         relevant: false,
         provider: adapter.id,
         meta: compactSessionMeta(meta),
+        metaFormat: 1,
         turns: {},
       };
       this.state.sessions[key] = session;
@@ -182,9 +207,14 @@ export class CodexObserver {
       for (const file of adapter.listFiles(root)) {
         const known = this.state.sessions[path.resolve(file)];
         let meta;
-        try { meta = known?.meta || adapter.readMeta(file, root); } catch { continue; }
+        try { meta = known?.metaFormat === 1 ? known.meta : adapter.readMeta(file, root); } catch { continue; }
         if (!meta) continue;
         const session = this.ensureSession(file, meta, adapter, baseline);
+        if (session.metaFormat !== 1 || JSON.stringify(session.meta) !== JSON.stringify(compactSessionMeta(meta))) {
+          session.meta = compactSessionMeta(meta);
+          session.metaFormat = 1;
+          this.markDirty();
+        }
         const relevant = adapter.belongsToRepository(meta, this.config.repoRoot, this.gitCache);
         if (session.provider !== adapter.id || session.relevant !== relevant) this.markDirty();
         session.provider = adapter.id;
@@ -202,17 +232,71 @@ export class CodexObserver {
     return Object.values(session.turns).filter((turn) => !turn.finished).sort((a, b) => b.startedAt - a.startedAt)[0] || null;
   }
 
+  parentTurnIds(session) {
+    const id = parentSessionId(session);
+    if (!id) return new Set();
+    const parent = Object.values(this.state.sessions).find((candidate) => {
+      const meta = candidate.meta || {};
+      return meta.id === id || (meta.session_id === id && meta.id === meta.session_id);
+    });
+    return new Set(Object.keys(parent?.turns || {}));
+  }
+
+  acceptsSignal(session, record, signal) {
+    if (!isForkedSession(session)) return true;
+    const boundary = forkBoundary(session.meta);
+    const recordedAt = Date.parse(record?.timestamp || "");
+    if (boundary !== null && Number.isFinite(recordedAt) && recordedAt < boundary) return false;
+    if (signal.turnId && this.parentTurnIds(session).has(signal.turnId)) return false;
+    if (!Number.isFinite(recordedAt) && signal.kind !== "session") return false;
+    return true;
+  }
+
+  acceptsRecord(session, record) {
+    if (!isForkedSession(session)) return true;
+    if (record?.type === "session_meta" && record.payload?.id && record.payload.id !== session.meta?.id) {
+      session.skippingInheritedHistory = true;
+      this.markDirty();
+      return false;
+    }
+    if (!session.skippingInheritedHistory) return true;
+    if (record?.type === "event_msg" && record.payload?.type === "thread_settings_applied") {
+      session.skippingInheritedHistory = false;
+      session.forkHistoryComplete = true;
+      this.markDirty();
+    }
+    return false;
+  }
+
+  publishTerminal(turn) {
+    const stopped = ["aborted", "stale", "inherited"].includes(turn.finalKind);
+    appendEvent(createEvent("work.upsert", {
+      actor: "observer",
+      payload: {
+        id: turn.workId,
+        title: turn.title,
+        status: stopped ? "stopped" : "done",
+        targets: turn.targets || [],
+        note: turn.summary || (stopped ? "Session stopped" : "Session completed"),
+        provisional: (turn.targets || []).length === 0,
+        session: turn.session || sessionAdapter(turn.provider || "codex").locator({ id: turn.sessionId, cwd: this.config.repoRoot }),
+      },
+    }));
+  }
+
   handleSignal(session, signal) {
     if (signal.kind === "start") {
       const turnId = signal.turnId || `turn-${this.now()}`;
+      const language = getSnapshot().map?.language;
+      const copy = provisionalCopy(language);
       const turn = {
         turnId, workId: workId(session.meta.id || session.meta.session_id, turnId),
         sessionId: session.meta.id || session.meta.session_id, provider: session.provider || "codex",
         startedAt: this.now(), lastActivityAt: this.now(), events: [], inferredAt: 0, initialInferred: false,
-        title: "Новая работа", summary: "Агент осмысливает задачу", targets: [], finished: false,
+        title: copy.title, summary: copy.note, targets: [], finished: false,
       };
       session.turns[turnId] = turn;
-      provisionalWork(turn, session.meta, sessionAdapter(session.provider || "codex"));
+      provisionalWork(turn, session.meta, sessionAdapter(session.provider || "codex"), language);
       this.markDirty();
       return;
     }
@@ -241,6 +325,7 @@ export class CodexObserver {
       turn.finished = true;
       turn.finalKind = signal.kind;
       turn.finalPending = true;
+      this.publishTerminal(turn);
     }
     if (signal.kind === "tool" && signal.name === "update_plan") turn.priorityPending = true;
     this.markDirty();
@@ -266,6 +351,37 @@ export class CodexObserver {
     turn.priorityPending = false;
     turn.events = [];
     this.markDirty();
+  }
+
+  reconcileForkedTurns() {
+    for (const session of Object.values(this.state.sessions)) {
+      if (!session.relevant || !isForkedSession(session)) continue;
+      const inheritedTurnIds = this.parentTurnIds(session);
+      for (const turn of Object.values(session.turns || {})) {
+        if (turn.finished || !inheritedTurnIds.has(turn.turnId)) continue;
+        turn.finalKind = "inherited";
+        this.stopTurnWithoutSignal(turn);
+      }
+    }
+  }
+
+  reconcileKnownObserverWork() {
+    const scannedSessions = new Map();
+    const openWorkIds = new Set();
+    for (const session of Object.values(this.state.sessions)) {
+      if (!session.relevant || !session.scanSucceeded) continue;
+      const id = session.meta?.id || session.meta?.session_id;
+      if (id) scannedSessions.set(id, session);
+      for (const turn of Object.values(session.turns || {})) if (!turn.finished) openWorkIds.add(turn.workId);
+    }
+    for (const work of getSnapshot().work || []) {
+      if (work.actor !== "observer" || !["active", "blocked", "planned"].includes(work.status) || openWorkIds.has(work.id)) continue;
+      if (!work.session?.id || !scannedSessions.has(work.session.id)) continue;
+      const copy = staleWorkCopy(work.title, work.note);
+      appendEvent(createEvent("work.upsert", { actor: "observer", payload: {
+        ...work, actor: undefined, updatedAt: undefined, status: "stopped", note: copy.note,
+      } }));
+    }
   }
 
   expireStaleTurns() {
@@ -317,11 +433,13 @@ export class CodexObserver {
           role: "observer", cwd: this.config.repoRoot,
           prompt: observerPrompt({ turn, final, snapshot }), outputSchema: OBSERVER_OUTPUT_SCHEMA,
         });
-        if (final && turn.finalKind === "aborted") result.value.workStatus = "stopped";
+        const terminalStatus = turn.finished ? (turn.finalKind === "aborted" ? "stopped" : "done") : undefined;
+        if (terminalStatus) result.value.workStatus = terminalStatus;
         const context = {
           workId: turn.workId,
           session: turn.session || sessionAdapter(turn.provider || "codex").locator({ id: turn.sessionId, cwd: this.config.repoRoot }),
           final,
+          terminalStatus,
         };
         applyObserverDecision(result.value, context);
         turn.title = result.value.workTitle;
@@ -331,7 +449,7 @@ export class CodexObserver {
         turn.inferredAt = this.now();
         turn.events = [];
         turn.priorityPending = false;
-        turn.finalPending = false;
+        turn.finalPending = turn.finished && !final;
         this.markDirty();
       } catch (error) {
         this.reportError(`Observer could not classify ${turn.workId}: ${error.message}`, `classify:${turn.workId}:${error.message}`);
@@ -355,6 +473,7 @@ export class CodexObserver {
 
   async runDue() {
     this.expireStaleTurns();
+    this.reconcileForkedTurns();
     this.reconcileStaleObserverWork();
     const pending = [];
     for (const session of Object.values(this.state.sessions)) {
@@ -376,11 +495,19 @@ export class CodexObserver {
       this.lastDiscoveryAt = this.now();
     }
     for (const [file, session] of Object.entries(this.state.sessions)) {
+      session.scanSucceeded = false;
       if (!session.relevant || !fs.existsSync(file)) continue;
       const adapter = sessionAdapter(session.provider || "codex");
-      const delta = readAppendedRecords(file, session.offset, {
-        discardingOversizedRecord: Boolean(session.discardingOversizedRecord),
-      });
+      let delta;
+      try {
+        delta = readAppendedRecords(file, session.offset, {
+          discardingOversizedRecord: Boolean(session.discardingOversizedRecord),
+        });
+        session.scanSucceeded = true;
+      } catch (error) {
+        this.reportError(`Observer could not read ${session.meta.id || "unknown session"}: ${error.message}`, `read:${file}:${error.message}`);
+        continue;
+      }
       if (session.offset !== delta.offset || Boolean(session.discardingOversizedRecord) !== Boolean(delta.discardingOversizedRecord)) this.markDirty();
       session.offset = delta.offset;
       session.discardingOversizedRecord = delta.discardingOversizedRecord;
@@ -389,8 +516,14 @@ export class CodexObserver {
         this.markDirty();
         this.reportError(`Observer skipped ${delta.skippedOversizedRecords} oversized journal record(s) for ${session.meta.id || "unknown session"}`, `oversized:${file}`);
       }
-      for (const record of delta.records) for (const signal of adapter.signals(record)) this.handleSignal(session, signal);
+      for (const record of delta.records) {
+        if (!this.acceptsRecord(session, record)) continue;
+        for (const signal of adapter.signals(record)) {
+          if (this.acceptsSignal(session, record, signal)) this.handleSignal(session, signal);
+        }
+      }
     }
+    this.reconcileKnownObserverWork();
     await this.runDue();
     if (this.dirty) {
       this.state.updatedAt = new Date(this.now()).toISOString();

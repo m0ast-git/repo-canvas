@@ -42,7 +42,10 @@ export function readSessionMeta(file) {
     const line = content.subarray(0, newline >= 0 ? newline : content.length).toString("utf8").replace(/\r$/, "");
     const record = JSON.parse(line);
     if (record.type !== "session_meta") return null;
-    return record.payload || null;
+    return {
+      ...(record.payload || {}),
+      recordTimestamp: typeof record.timestamp === "string" ? record.timestamp : null,
+    };
   } finally {
     fs.closeSync(descriptor);
   }

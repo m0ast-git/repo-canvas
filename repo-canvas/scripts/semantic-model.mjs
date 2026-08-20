@@ -164,12 +164,13 @@ export function validateArchitecture(value, snapshot = getSnapshot()) {
   return value;
 }
 
-export function architectureEvents(value, { actor = "architect", refresh = false } = {}) {
+export function architectureEvents(value, { actor = "architect", refresh = false, language = "" } = {}) {
   const snapshot = getSnapshot();
   validateArchitecture(value, snapshot);
   const events = [createEvent("map.upsert", { actor, payload: {
     projectTitle: value.projectTitle, projectSummary: value.projectSummary || "", layoutIntent: value.layoutIntent || "domain",
     layoutDirection: value.layoutDirection || "AUTO", keyFlows: value.keyFlows || [], unresolvedQuestions: value.unresolvedQuestions || [],
+    ...(language ? { language } : {}),
   } })];
   for (const area of value.areas) events.push(createEvent("area.upsert", { actor, payload: area }));
   for (const entity of orderEntities(value.entities)) events.push(createEvent("entity.upsert", { actor, payload: entity }));
@@ -200,7 +201,7 @@ export function observerEvents(decision, context) {
     return entity && entity.kind !== "person";
   }))];
   const workEvent = createEvent("work.upsert", { actor: "observer", payload: {
-    id: context.workId, title: decision.workTitle || "Agent work", status: decision.workStatus,
+    id: context.workId, title: decision.workTitle || "Agent work", status: context.terminalStatus || decision.workStatus,
     targets, note: decision.workSummary || "", provisional: targets.length === 0, session: context.session,
   } });
   for (const change of decision.entityChanges || []) {
