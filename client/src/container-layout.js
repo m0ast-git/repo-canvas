@@ -4,6 +4,8 @@ import { graphHierarchy } from "./graph-contract.js";
 export const CONTAINER_PADDING_X = 40;
 export const CONTAINER_PADDING_Y = 40;
 export const CONTAINER_ITEM_GAP = 76;
+export const AREA_HEADER_HEIGHT = 150;
+export const AREA_ITEM_GAP = 76;
 
 function rectanglesOverlap(a, b, gap = 0) {
   return a.x - gap < b.x + b.width
@@ -73,7 +75,7 @@ export function normalizeStoredEntityPositions(snapshot, entityRects, defaultRec
       x: area.x + 18,
       y: area.y + 14,
       width: Math.max(0, Math.min(560, area.width - 36)),
-      height: 82,
+      height: AREA_HEADER_HEIGHT - 20,
     } : null;
     normalizeSiblings(ids, header);
   }
@@ -115,6 +117,71 @@ export function packVerticalContainer({ containerRect, headerRect, items, moving
     width: widest,
     height: Math.max(headerRect.height, contentBottom + CONTAINER_PADDING_Y - containerRect.y),
   };
+}
+
+function areaItemOrder(a, b) {
+  return a.rect.y - b.rect.y || a.rect.x - b.rect.x || a.id.localeCompare(b.id);
+}
+
+export function orderAreaItemsForDrop(items, movingId = "", dropPoint = null) {
+  const moving = movingId ? items.find((item) => item.id === movingId) : null;
+  const ordered = items.filter((item) => item !== moving).sort(areaItemOrder);
+  if (!moving) return ordered;
+  if (!dropPoint || !ordered.length) return [...ordered, moving];
+  const closest = ordered.map((item, index) => ({
+    index,
+    distance: Math.hypot(dropPoint.x - (item.rect.x + item.rect.width / 2), dropPoint.y - (item.rect.y + item.rect.height / 2)),
+    after: dropPoint.x > item.rect.x + item.rect.width / 2 || dropPoint.y > item.rect.y + item.rect.height / 2,
+  })).sort((a, b) => a.distance - b.distance || a.index - b.index)[0];
+  ordered.splice(closest.index + (closest.after ? 1 : 0), 0, moving);
+  return ordered;
+}
+
+export function packAreaGrid({ areaRect, items, movingId = "", dropPoint = null, headerHeight = AREA_HEADER_HEIGHT }) {
+  const ordered = orderAreaItemsForDrop(items, movingId, dropPoint);
+  const widest = Math.max(0, ...ordered.map((item) => item.rect.width));
+  const width = Math.max(520, widest + CONTAINER_PADDING_X * 2, Number(areaRect.width || 0));
+  const left = areaRect.x + CONTAINER_PADDING_X;
+  const right = areaRect.x + width - CONTAINER_PADDING_X;
+  let x = left;
+  let y = areaRect.y + headerHeight + CONTAINER_PADDING_Y;
+  let rowHeight = 0;
+  const placements = [];
+  for (const item of ordered) {
+    if (x > left && x + item.rect.width > right) {
+      x = left;
+      y += rowHeight + AREA_ITEM_GAP;
+      rowHeight = 0;
+    }
+    placements.push({ id: item.id, x, y, width: item.rect.width, height: item.rect.height });
+    x += item.rect.width + AREA_ITEM_GAP;
+    rowHeight = Math.max(rowHeight, item.rect.height);
+  }
+  const contentBottom = placements.length ? y + rowHeight : areaRect.y + headerHeight;
+  return {
+    placements,
+    slot: placements.find((item) => item.id === movingId) || null,
+    width,
+    height: Math.max(260, contentBottom + CONTAINER_PADDING_Y - areaRect.y),
+  };
+}
+
+export function displaceOverlappingAreas(areaRects, anchorId, gap = 96) {
+  const output = new Map([...areaRects].map(([id, rect]) => [id, { ...rect }]));
+  const queue = [anchorId]; const moved = new Set(); let guard = 0;
+  while (queue.length && guard < output.size * output.size * 2) {
+    guard += 1;
+    const fixedId = queue.shift(); const fixed = output.get(fixedId); if (!fixed) continue;
+    for (const [id, candidate] of output) {
+      if (id === fixedId || !rectanglesOverlap(fixed, candidate, gap)) continue;
+      const rightShift = fixed.x + fixed.width + gap - candidate.x;
+      const downShift = fixed.y + fixed.height + gap - candidate.y;
+      const moveRight = rightShift <= downShift;
+      output.set(id, { ...candidate, x: candidate.x + (moveRight ? rightShift : 0), y: candidate.y + (moveRight ? 0 : downShift) });
+      moved.add(id); queue.push(id);
+    }
+  }
+  return { rects: output, moved: [...moved] };
 }
 
 function entityStructureBounds(entityId, byId, descendants, positions) {
@@ -233,6 +300,65 @@ export function compactContainerMembership(snapshot, nodes, context, nextParentI
   };
 }
 
+export function compactAreaMembership(snapshot, nodes, context, nextAreaId, initialTranslation, dropPoint) {
+  const movedEntityIds = new Set([...context.affected].filter((id) => id.startsWith("entity:")).map((id) => id.replace(/^entity:/, "")));
+  const draft = {
+    ...snapshot,
+    entities: snapshot.entities.map((entity) => movedEntityIds.has(entity.id)
+      ? { ...entity, areaId: nextAreaId, parentId: entity.id === context.entityId ? "" : entity.parentId }
+      : entity),
+  };
+  const hierarchy = graphHierarchy(draft);
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const byEntity = new Map(draft.entities.map((entity) => [entity.id, entity]));
+  const positions = new Map(nodes.filter((node) => node.id.startsWith("entity:")).map((node) => [node.id, { ...node.position }]));
+  const touched = new Set();
+  for (const [id, initial] of context.positions) {
+    if (!id.startsWith("entity:")) continue;
+    positions.set(id, { x: initial.x + initialTranslation.dx, y: initial.y + initialTranslation.dy });
+    touched.add(id);
+  }
+  const translateSubtree = (entityId, dx, dy) => {
+    for (const id of [entityId, ...(hierarchy.descendants.get(entityId) || [])]) {
+      const nodeId = `entity:${id}`; const position = positions.get(nodeId); if (!position) continue;
+      positions.set(nodeId, { x: position.x + dx, y: position.y + dy }); touched.add(nodeId);
+    }
+  };
+  const areaRects = new Map(nodes.filter((node) => node.type === "area").map((node) => [node.data.area.id, nodeRect(node)]));
+  const areaItems = new Map();
+  const affectedAreas = [...new Set([context.originalAreaId, nextAreaId].filter(Boolean))];
+  for (const areaId of affectedAreas) {
+    const areaRect = areaRects.get(areaId); if (!areaRect) continue;
+    const roots = draft.entities.filter((entity) => entity.kind !== "person" && entity.areaId === areaId && (!entity.parentId || byEntity.get(entity.parentId)?.areaId !== areaId));
+    const items = roots.map((entity) => ({ id: entity.id, rect: entityStructureBounds(entity.id, byId, hierarchy.descendants, positions) })).filter((item) => item.rect.width && item.rect.height);
+    const packed = packAreaGrid({ areaRect, items, movingId: areaId === nextAreaId ? context.entityId : "", dropPoint: areaId === nextAreaId ? dropPoint : null });
+    const itemById = new Map(items.map((item) => [item.id, item]));
+    for (const placement of packed.placements) {
+      const current = itemById.get(placement.id)?.rect; if (!current) continue;
+      translateSubtree(placement.id, placement.x - current.x, placement.y - current.y);
+    }
+    const nextRect = { ...areaRect, width: packed.width, height: packed.height };
+    areaRects.set(areaId, nextRect); areaItems.set(areaId, nextRect);
+  }
+  const displaced = displaceOverlappingAreas(areaRects, nextAreaId);
+  for (const areaId of displaced.moved) {
+    const before = areaRects.get(areaId); const after = displaced.rects.get(areaId); if (!before || !after) continue;
+    const dx = after.x - before.x; const dy = after.y - before.y;
+    for (const entity of draft.entities.filter((item) => item.areaId === areaId && item.kind !== "person")) {
+      const nodeId = `entity:${entity.id}`; const position = positions.get(nodeId); if (!position) continue;
+      positions.set(nodeId, { x: position.x + dx, y: position.y + dy }); touched.add(nodeId);
+    }
+    areaItems.set(areaId, after);
+  }
+  for (const areaId of affectedAreas) if (displaced.rects.has(areaId)) areaItems.set(areaId, displaced.rects.get(areaId));
+  return {
+    hierarchy,
+    movedEntityIds: [...movedEntityIds],
+    moves: [...touched].map((id) => ({ id, ...positions.get(id) })),
+    areas: [...areaItems].map(([id, rect]) => ({ id: `area:${id}`, ...rect })),
+  };
+}
+
 function calculatedGroupContour(node, byId, descendants) {
   const width = Math.max(280, Number(node.data?.headerWidth || node.style?.width || 0));
   const height = Math.max(76, Number(node.data?.headerHeight || 0));
@@ -284,9 +410,17 @@ export function hierarchyWithLayoutItems(snapshot, items) {
     items.filter((item) => item.kind === "entity" && Object.hasOwn(item, "parentId"))
       .map((item) => [item.id, item.parentId]),
   );
-  if (!parents.size) return graphHierarchy(snapshot).descendants;
+  const areas = new Map(
+    items.filter((item) => item.kind === "entity" && Object.hasOwn(item, "areaId"))
+      .map((item) => [item.id, item.areaId]),
+  );
+  if (!parents.size && !areas.size) return graphHierarchy(snapshot).descendants;
   return graphHierarchy({
     ...snapshot,
-    entities: snapshot.entities.map((entity) => parents.has(entity.id) ? { ...entity, parentId: parents.get(entity.id) } : entity),
+    entities: snapshot.entities.map((entity) => ({
+      ...entity,
+      ...(parents.has(entity.id) ? { parentId: parents.get(entity.id) } : {}),
+      ...(areas.has(entity.id) ? { areaId: areas.get(entity.id) } : {}),
+    })),
   }).descendants;
 }

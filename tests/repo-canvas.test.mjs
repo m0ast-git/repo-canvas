@@ -339,6 +339,7 @@ test("repair previews and quarantines malformed JSON without hiding schema error
 test("loopback server guards navigation, reports port collision, and stops", async (t) => {
   const root = makeRepository(t);
   assert.equal(runCli(root, ["area", "--id", "core", "--title", "Core"]).status, 0);
+  assert.equal(runCli(root, ["area", "--id", "target", "--title", "Target"]).status, 0);
   assert.equal(runCli(root, ["entity", "--id", "container", "--area", "core", "--label", "Container", "--status", "operational", "--kind", "capability"]).status, 0);
   assert.equal(runCli(root, ["entity", "--id", "module", "--area", "core", "--parent", "container", "--label", "Module", "--status", "operational"]).status, 0);
   assert.equal(runCli(root, ["relation", "--id", "module-loop", "--from", "module", "--to", "module", "--label", "uses"]).status, 0);
@@ -440,7 +441,7 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   const layoutPayload = JSON.stringify({
     canvasRevision: state.json.revision,
     items: [
-      { kind: "area", id: "core", x: 180, y: 220 },
+      { kind: "area", id: "core", x: 180, y: 220, width: 780, height: 620 },
       { kind: "entity", id: "module", x: 260, y: 340, parentId: "" },
       { kind: "work", id: "demo", x: 540, y: 360 },
     ],
@@ -456,6 +457,7 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   assert.equal(layout.json.state.revision, layout.json.revision);
   const movedState = await request(port, { path: "/api/state", headers: authHeaders });
   assert.deepEqual([movedState.json.areas[0].x, movedState.json.areas[0].y], [180, 220]);
+  assert.deepEqual([movedState.json.areas[0].width, movedState.json.areas[0].height], [780, 620]);
   const movedModule = movedState.json.entities.find((item) => item.id === "module");
   assert.deepEqual([movedModule.x, movedModule.y], [260, 340]);
   assert.equal(movedModule.parentId, "", "dragging fully outside must detach from its semantic container");
@@ -468,7 +470,22 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   });
   assert.equal(reparented.status, 201, reparented.text);
   assert.equal(reparented.json.state.entities.find((item) => item.id === "module").parentId, "container");
-  let renameRevision = reparented.json.revision;
+  const crossAreaPayload = JSON.stringify({ canvasRevision: reparented.json.revision, items: [{ kind: "entity", id: "module", x: 1200, y: 360, areaId: "target", parentId: "" }] });
+  const crossArea = await request(port, {
+    method: "POST", path: "/api/layout",
+    headers: { ...commonHeaders, "Content-Length": Buffer.byteLength(crossAreaPayload), Origin: `http://127.0.0.1:${port}` }, body: crossAreaPayload,
+  });
+  assert.equal(crossArea.status, 201, crossArea.text);
+  const movedAcross = crossArea.json.state.entities.find((item) => item.id === "module");
+  assert.equal(movedAcross.areaId, "target");
+  assert.equal(movedAcross.parentId, "");
+  const restoreAreaPayload = JSON.stringify({ canvasRevision: crossArea.json.revision, items: [{ kind: "entity", id: "module", x: 280, y: 360, areaId: "core", parentId: "container" }] });
+  const restoredArea = await request(port, {
+    method: "POST", path: "/api/layout",
+    headers: { ...commonHeaders, "Content-Length": Buffer.byteLength(restoreAreaPayload), Origin: `http://127.0.0.1:${port}` }, body: restoreAreaPayload,
+  });
+  assert.equal(restoredArea.status, 201, restoredArea.text);
+  let renameRevision = restoredArea.json.revision;
   for (const [kind, id, value] of [
     ["area", "core", "Runtime"],
     ["entity", "module", "Worker"],

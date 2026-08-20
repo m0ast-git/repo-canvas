@@ -1,16 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { placeRouteLabels, rectanglesOverlap } from "../client/src/route-label-layout.js";
+import { placeRouteLabels, rectanglesOverlap, routeLabelScale } from "../client/src/route-label-layout.js";
 
-function placementBox(placement, zoom = 1) {
+function placementBox(placement) {
   return {
-    x: placement.x - placement.width / zoom / 2,
-    y: placement.y - placement.height / zoom / 2,
-    width: placement.width / zoom,
-    height: placement.height / zoom,
+    x: placement.x - placement.width * placement.scale / 2,
+    y: placement.y - placement.height * placement.scale / 2,
+    width: placement.width * placement.scale,
+    height: placement.height * placement.scale,
   };
 }
+
+test("route labels remain bounded at distant zoom", () => {
+  assert.equal(routeLabelScale(.05), 2.6);
+  assert.equal(routeLabelScale(.5), 2);
+  assert.equal(routeLabelScale(1.4), 1);
+});
 
 test("route labels avoid visible nodes and each other", () => {
   const routes = [

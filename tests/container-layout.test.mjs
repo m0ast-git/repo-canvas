@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 
 import {
   CONTAINER_ITEM_GAP, CONTAINER_PADDING_X, CONTAINER_PADDING_Y,
-  compactContainerMembership, normalizeStoredEntityPositions, orderItemsForDrop, packVerticalContainer,
+  compactContainerMembership, displaceOverlappingAreas, normalizeStoredEntityPositions,
+  orderAreaItemsForDrop, orderItemsForDrop, packAreaGrid, packVerticalContainer,
 } from "../client/src/container-layout.js";
 
 test("legacy stored overlaps fall back to collision-free layout positions", () => {
@@ -84,6 +85,33 @@ test("container packing removes holes and grows around every item", () => {
     { id: "last", x: containerRect.x + CONTAINER_PADDING_X, y: headerRect.y + headerRect.height + CONTAINER_PADDING_Y + 80 + CONTAINER_ITEM_GAP + 90 + CONTAINER_ITEM_GAP },
   ]);
   assert.equal(packed.height, packed.placements.at(-1).y + 100 + CONTAINER_PADDING_Y - containerRect.y);
+});
+
+test("area grid uses the same deterministic slot for preview and commit", () => {
+  const areaRect = { x: 100, y: 80, width: 720, height: 400 };
+  const items = [
+    { id: "first", rect: { x: 150, y: 250, width: 220, height: 120 } },
+    { id: "second", rect: { x: 450, y: 250, width: 220, height: 120 } },
+    { id: "moving", rect: { x: 900, y: 250, width: 220, height: 120 } },
+  ];
+  const ordered = orderAreaItemsForDrop(items, "moving", { x: 410, y: 300 });
+  assert.deepEqual(ordered.map((item) => item.id), ["first", "moving", "second"]);
+  const preview = packAreaGrid({ areaRect, items, movingId: "moving", dropPoint: { x: 410, y: 300 } });
+  const commit = packAreaGrid({ areaRect, items, movingId: "moving", dropPoint: { x: 410, y: 300 } });
+  assert.deepEqual(preview.slot, commit.slot);
+  assert.ok(preview.placements.every((item) => item.y >= areaRect.y + 150 + CONTAINER_PADDING_Y));
+  assert.ok(preview.height >= 400);
+});
+
+test("overlapping areas are displaced deterministically without overlap", () => {
+  const result = displaceOverlappingAreas(new Map([
+    ["anchor", { x: 0, y: 0, width: 500, height: 400 }],
+    ["right", { x: 450, y: 0, width: 300, height: 300 }],
+    ["tail", { x: 760, y: 0, width: 300, height: 300 }],
+  ]), "anchor", 60);
+  const anchor = result.rects.get("anchor"); const right = result.rects.get("right"); const tail = result.rects.get("tail");
+  assert.ok(right.x >= anchor.x + anchor.width + 60 || right.y >= anchor.y + anchor.height + 60);
+  assert.ok(tail.x >= right.x + right.width + 60 || tail.y >= right.y + right.height + 60);
 });
 
 test("membership change compacts the source and inserts into the target atomically", () => {

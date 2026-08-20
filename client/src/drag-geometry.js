@@ -154,7 +154,7 @@ export function nearestFreeTranslation(sourceBounds, desiredTranslation, obstacl
 export function dropObstacle(node) {
   if (node.type === "area") {
     const rect = nodeRect(node);
-    return { x: rect.x + 18, y: rect.y + 14, width: Math.max(0, Math.min(560, rect.width - 36)), height: 82 };
+    return { x: rect.x + 18, y: rect.y + 14, width: Math.max(0, Math.min(560, rect.width - 36)), height: 130 };
   }
   if (node.type === "group") return groupHeaderRect(node);
   return nodeRect(node);

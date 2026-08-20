@@ -5,6 +5,11 @@ export function rectanglesOverlap(a, b, gap = 0) {
     && a.y + a.height + gap > b.y;
 }
 
+export function routeLabelScale(zoom) {
+  const safeZoom = Math.max(.025, Number(zoom || 0));
+  return Math.min(2.6, Math.max(1, 1 / safeZoom));
+}
+
 function labelCandidates(points, width) {
   const candidates = [];
   for (let index = 1; index < points.length; index += 1) {
@@ -38,8 +43,9 @@ export function placeRouteLabels(routes, viewport, size, obstacles) {
   for (const route of routes.filter((item) => item.label)) {
     const width = Math.min(260, Math.max(96, route.label.length * 6.5 + 32));
     const height = 32;
-    const visualWidth = width / viewport.zoom;
-    const visualHeight = height / viewport.zoom;
+    const scale = routeLabelScale(viewport.zoom);
+    const visualWidth = width * scale;
+    const visualHeight = height * scale;
     let safe = true;
     let point = labelCandidates(route.points, visualWidth).find((candidate) => {
       const box = {
@@ -90,7 +96,7 @@ export function placeRouteLabels(routes, viewport, size, obstacles) {
       height: visualHeight,
     };
     if (safe) occupied.push(box);
-    result.set(route.id, { ...point, width, height, scale: 1 / viewport.zoom, safe });
+    result.set(route.id, { ...point, width, height, scale, safe });
   }
   return result;
 }

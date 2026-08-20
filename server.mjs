@@ -229,6 +229,7 @@ function saveLayout(body) {
     const areas = new Map(snapshot.areas.map((item) => [item.id, item]));
     const entities = new Map(snapshot.entities.map((item) => [item.id, item]));
     const work = new Map(snapshot.work.map((item) => [item.id, item]));
+    const requestedEntityAreas = new Map(body.items.filter((item) => item?.kind === "entity" && Object.hasOwn(item, "areaId")).map((item) => [String(item.id || "").trim(), String(item.areaId || "").trim()]));
     const seen = new Set();
     const events = body.items.map((item) => {
       const kind = String(item?.kind || ""); const id = String(item?.id || "").trim();
@@ -238,11 +239,21 @@ function saveLayout(body) {
       seen.add(key);
       if (kind === "area") {
         const current = areas.get(id); if (!current) throw new HttpError(404, `Area not found: ${id}`);
+        const width = Object.hasOwn(item, "width") ? Number(item.width) : current.width;
+        const height = Object.hasOwn(item, "height") ? Number(item.height) : current.height;
+        if (width !== undefined && (!Number.isFinite(width) || width < 260)) throw new HttpError(400, `Area width must be at least 260 for ${id}`);
+        if (height !== undefined && (!Number.isFinite(height) || height < 180)) throw new HttpError(400, `Area height must be at least 180 for ${id}`);
         const { actor, updatedAt, ...payload } = current;
-        return createEvent("area.upsert", { actor: "owner", payload: { ...payload, x, y } });
+        return createEvent("area.upsert", { actor: "owner", payload: { ...payload, x, y, ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}) } });
       }
       if (kind === "entity") {
         const current = entities.get(id); if (!current) throw new HttpError(404, `Entity not found: ${id}`);
+        let areaId = current.areaId || "";
+        if (Object.hasOwn(item, "areaId")) {
+          areaId = String(item.areaId || "").trim();
+          if (current.kind === "person" && areaId) throw new HttpError(400, "A person cannot be placed inside a project area");
+          if (current.kind !== "person" && !areas.has(areaId)) throw new HttpError(400, `Entity area not found: ${areaId}`);
+        }
         let parentId = current.parentId || "";
         if (Object.hasOwn(item, "parentId")) {
           parentId = String(item.parentId || "").trim();
@@ -251,15 +262,20 @@ function saveLayout(body) {
           const parent = parentId ? entities.get(parentId) : null;
           if (parentId && !parent) throw new HttpError(400, `Entity parent not found: ${parentId}`);
           if (parent && parent.kind === "person") throw new HttpError(400, "A person cannot contain project entities");
-          if (parent && parent.areaId !== current.areaId) throw new HttpError(400, "Entity and parent must belong to the same project area");
+          const parentAreaId = parent ? requestedEntityAreas.get(parent.id) ?? parent.areaId : "";
+          if (parent && parentAreaId !== areaId) throw new HttpError(400, "Entity and parent must belong to the same project area");
           let ancestor = parent; const visited = new Set();
           while (ancestor && !visited.has(ancestor.id)) {
             if (ancestor.id === id) throw new HttpError(400, "Entity parent would create a hierarchy cycle");
             visited.add(ancestor.id); ancestor = ancestor.parentId ? entities.get(ancestor.parentId) : null;
           }
         }
+        if (parentId) {
+          const parent = entities.get(parentId); const parentAreaId = parent ? requestedEntityAreas.get(parent.id) ?? parent.areaId : "";
+          if (!parent || parentAreaId !== areaId) throw new HttpError(400, "Entity and parent must belong to the same project area");
+        }
         const { actor, updatedAt, ...payload } = current;
-        return createEvent("entity.upsert", { actor: "owner", payload: { ...payload, parentId, x, y } });
+        return createEvent("entity.upsert", { actor: "owner", payload: { ...payload, areaId, parentId, x, y } });
       }
       if (kind === "work") {
         const current = work.get(id); if (!current) throw new HttpError(404, `Work not found: ${id}`);

@@ -1,7 +1,7 @@
 import ELK from "elkjs/lib/elk-api.js";
 import elkWorkerUrl from "elkjs/lib/elk-worker.min.js?url";
 import { createRoutingSession, init as initLibavoid, routeEdges as routeLibavoidEdges } from "@mr_mint/elkjs-libavoid";
-import { normalizeStoredEntityPositions } from "./container-layout.js";
+import { AREA_HEADER_HEIGHT, normalizeStoredEntityPositions } from "./container-layout.js";
 import { ENTITY_BASE_HEIGHT, ENTITY_MIN_WIDTH, entityCardSize, groupHeaderSize } from "./node-geometry.js";
 import { RoutingRegistry } from "./routing-registry.js";
 import { createRoutingScope, routesFromRoutingResults } from "./routing-scopes.js";
@@ -16,7 +16,6 @@ const PERSON_W = 176;
 const PERSON_H = 164;
 const WORK_W = 196;
 const WORK_H = 66;
-const AREA_HEADER_H = 100;
 const CLEARANCE = 24;
 const LIBAVOID_OPTIONS = Object.freeze({
   routingType: "orthogonal",
@@ -109,7 +108,7 @@ async function layoutArea(area, entities, relations, direction) {
       "elk.hierarchyHandling": "INCLUDE_CHILDREN",
       "elk.direction": direction,
       "elk.edgeRouting": "ORTHOGONAL",
-      "elk.padding": `[top=${AREA_HEADER_H},left=34,bottom=38,right=34]`,
+      "elk.padding": `[top=${AREA_HEADER_HEIGHT},left=34,bottom=38,right=34]`,
       "elk.spacing.nodeNode": "96",
       "elk.spacing.edgeEdge": "44",
       "elk.spacing.edgeNode": "56",
@@ -162,7 +161,7 @@ async function layoutAreas(snapshot, areaLayouts, direction) {
       "elk.aspectRatio": "1.45",
       "elk.padding": "[top=90,left=90,bottom=90,right=90]",
     }),
-    children: snapshot.areas.map((area) => ({ id: area.id, width: areaLayouts.get(area.id).width, height: areaLayouts.get(area.id).height })),
+    children: snapshot.areas.map((area) => ({ id: area.id, width: Math.max(areaLayouts.get(area.id).width, Number(area.width || 0)), height: Math.max(areaLayouts.get(area.id).height, Number(area.height || 0)) })),
     edges: [...aggregate.entries()].map(([id, item]) => ({ id, sources: [item.from], targets: [item.to] })),
   };
   const result = root.children.length ? await elk.layout(root) : root;
@@ -235,7 +234,7 @@ function workPositions(snapshot, entityRects, areaRects) {
   const positions = new Map(); const placed = [];
   const obstacles = [
     ...entityRects.values(),
-    ...areaRects.values().map((rect) => ({ x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_H - 20 })),
+    ...areaRects.values().map((rect) => ({ x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_HEIGHT - 20 })),
   ];
   for (const work of (snapshot.work || []).filter((item) => ["active", "blocked", "planned"].includes(item.status))) {
     const manual = Number.isFinite(Number(work.x)) && Number.isFinite(Number(work.y)) ? { x: Number(work.x), y: Number(work.y) } : null;
@@ -373,7 +372,7 @@ function detailedRoutingScopes(snapshot, geometry, hierarchy, colors) {
   for (const area of snapshot.areas) {
     const rect = geometry.areas.get(area.id); if (!rect) continue;
     ensureArea(area.id);
-    const header = { x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_H - 20, id: `area-header:${area.id}`, moveWith: `area:${area.id}`, moveOffsetX: 18, moveOffsetY: 14 };
+    const header = { x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_HEIGHT - 20, id: `area-header:${area.id}`, moveWith: `area:${area.id}`, moveOffsetX: 18, moveOffsetY: 14 };
     obstacles.push(header); obstaclesByArea.get(area.id).push(header);
   }
   for (const [id, rect] of geometry.entities) {
@@ -457,6 +456,7 @@ async function calculate(snapshot, revision, emitPartial) {
   for (const area of snapshot.areas) {
     const areaRect = areas.get(area.id); const local = areaLayouts.get(area.id); if (!areaRect) continue;
     if (Number.isFinite(Number(area.x)) && Number.isFinite(Number(area.y))) { areaRect.x = Number(area.x); areaRect.y = Number(area.y); }
+    areaRect.width = Math.max(areaRect.width, Number(area.width || 0)); areaRect.height = Math.max(areaRect.height, Number(area.height || 0));
     for (const [id, rect] of local.entities) {
       const absolute = { ...rect, x: areaRect.x + rect.x, y: areaRect.y + rect.y };
       defaultEntities.set(id, { ...absolute });
