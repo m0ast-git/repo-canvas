@@ -5,7 +5,7 @@
 .overview-area { position:absolute;pointer-events:none;border:calc(1px / var(--canvas-zoom)) solid var(--area-color);border-radius:calc(5px / var(--canvas-zoom));background:color-mix(in srgb,var(--area-color) 5%,var(--rc-surface)); }
 .overview-area-content { box-sizing:border-box;transform-origin:0 0;padding:16px 18px;display:flex;flex-direction:column;gap:12px;overflow:hidden; }
 .overview-area-title { border:0;background:none;color:var(--rc-text);text-align:left;padding:0;pointer-events:auto;cursor:pointer;display:grid;gap:9px; }
-.overview-area-title small { color:var(--area-color);font-size:12px;font-weight:600; }
+.overview-area-title small { color:color-mix(in srgb,var(--area-color) 75%,var(--rc-text));font-size:12px;font-weight:600; }
 .overview-area-title strong { font-size:clamp(19px,1.65vw,26px);line-height:1.14;font-weight:600;letter-spacing:-.45px;text-wrap:balance; }
 .overview-area-title span { color:var(--rc-text-secondary);font-size:13px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
 .overview-modules { display:flex;flex-wrap:wrap;gap:5px;align-content:start; }

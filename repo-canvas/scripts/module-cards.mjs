@@ -68,9 +68,14 @@ export function selectInitialReferences(root,index,snapshot) {
 }
 
 export function targetsForFiles(snapshot,files,root="") {
-  const normalized=files.map(file=>String(file).replaceAll("\\","/")).map(file=>root&&path.isAbsolute(file)?path.relative(root,file).replaceAll("\\","/"):file.replace(/^\.\//,""));
+  // Match the same path identity used by project-root (macOS /var symlinks and
+  // Windows short TEMP aliases can differ from the path reported by a hook).
+  const canonical=file=>{try{return fs.realpathSync(file);}catch{try{return path.join(fs.realpathSync(path.dirname(file)),path.basename(file));}catch{return path.resolve(file);}}};
+  const normalize=file=>{const value=String(file).replaceAll("\\","/");return process.platform==="win32"?value.toLowerCase():value;};
+  const base=root?canonical(root):"";
+  const normalized=files.map(file=>String(file)).map(file=>normalize(base&&path.isAbsolute(file)?path.relative(base,canonical(file)):file.replace(/^\.\//,"")));
   return snapshot.entities.filter(item=>item.kind!=="person"&&[item.path,...(item.evidence||[])].filter(Boolean).some(ref=>{
-    const file=String(ref).split(/#|::|:\d/)[0].replaceAll("\\","/").replace(/\/$/,"");
+    const file=normalize(String(ref).split(/#|::|:\d/)[0]).replace(/\/$/,"");
     return normalized.some(changed=>changed===file||changed.startsWith(file+"/"));
   })).map(item=>item.id);
 }

@@ -10,7 +10,12 @@ import { spawn, spawnSync } from "node:child_process";
 const packageInfo = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8"));
 const tarball = path.resolve(process.argv[2] || path.join("dist", `repo-canvas-${packageInfo.version}.tgz`));
 if (!fs.statSync(tarball, { throwIfNoEntry: false })?.isFile()) throw new Error("Usage: node tests/self-update-smoke.mjs <repo-canvas.tgz>");
-const targetVersion = packageInfo.version;
+// Offer a future, deliberately unsigned release while running the real current
+// package. A version override would disappear on rollback and invalidate this
+// check of the original runtime and its error status.
+const currentVersion=packageInfo.version;
+const parts=currentVersion.split(".").map(Number);
+const targetVersion = `${parts[0]}.${parts[1]}.${parts[2]+1}`;
 const sourceCli = path.resolve("repo-canvas", "scripts", "canvas.mjs");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-update-"));
 let activePid = null;
@@ -156,7 +161,6 @@ try {
     env: {
       ...process.env,
       NODE_ENV: "test",
-      REPO_CANVAS_CURRENT_VERSION_OVERRIDE: "0.0.1",
       REPO_CANVAS_RELEASE_API_URL: `http://127.0.0.1:${fixturePort}/latest`,
       REPO_CANVAS_AUTO_OPEN: "0",
     },
@@ -183,14 +187,15 @@ try {
   const updateStateFile = path.join(root, ".repo-canvas", "runtime", "update-state.json");
   const status = await request(canvasPort, token, "/api/update/status");
   assert.equal(status.status, 200, status.text);
-  assert.equal(status.json.currentVersion, "0.0.1");
+  assert.equal(status.json.currentVersion, currentVersion);
   assert.equal(status.json.status, "failed");
   const updateState = JSON.parse(fs.readFileSync(updateStateFile, "utf8"));
   assert.equal(updateState.status, "failed");
   assert.ok(updateState.error);
+  assert.match(updateState.error,/подпис|подтверж|GitHub CLI|происхожд/i);
   assert.ok(!fs.existsSync(path.join(root, ".repo-canvas", "runtime", "current.json")), "Unsigned package was activated");
   assert.ok(!fs.existsSync(path.join(root, ".repo-canvas", "runtime", "versions", targetVersion, "node_modules", "repo-canvas")), "Unsigned package was installed");
-  console.log(`Self-update rejected unsigned ${targetVersion} and restored 0.0.1`);
+  console.log(`Self-update rejected unsigned ${targetVersion} and restored ${currentVersion}`);
 } finally {
   if (canvasPort && token) {
     try { activePid ||= (await request(canvasPort, token, "/api/health")).json?.pid; } catch {}

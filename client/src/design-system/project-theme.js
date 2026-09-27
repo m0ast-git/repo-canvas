@@ -1,6 +1,6 @@
 // Stable area ownership: neither array order nor selection participates.
-const light = ["#657D35", "#A16F1D", "#258B87", "#687DAA", "#986489", "#AC6550"];
-const dark = ["#BBCD82", "#E2BB6F", "#79D2C9", "#AABDEB", "#D4A3CB", "#E9A08B"];
+const light = ["#657D35", "#A16F1D", "#258B87", "#687DAA", "#986489", "#AD6050"];
+const dark = ["#ADD58B", "#E2BB6F", "#79D2C9", "#AABDEB", "#D4A3CB", "#E9A08B"];
 export function areaColor(area, theme = "light") {
   const id = typeof area === "string" ? area : area.id;
   const key = { olive: 0, leaf: 1, teal: 2 }[area.colorKey];
