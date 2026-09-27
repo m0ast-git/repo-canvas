@@ -13,7 +13,7 @@ try {
   fs.writeFileSync(path.join(root,"input.mjs"),"import {finish} from './output.mjs';\nexport function accept(value) { return finish(value); }\n");
   fs.writeFileSync(path.join(root,"output.mjs"),"export function finish(value) { return value + 1; }\n");
   fs.writeFileSync(path.join(root,".env"),"SECRET=fixture-only\n");
-  const {buildModuleCards,observerSubgraph}=await import("../repo-canvas/scripts/module-cards.mjs");
+  const {buildModuleCards,observerSubgraph,targetsForFiles}=await import("../repo-canvas/scripts/module-cards.mjs");
   const {sourceStructure}=await import("../repo-canvas/scripts/source-syntax.mjs");
   const cards=buildModuleCards(root);const again=buildModuleCards(root);
   checked("module cards reuse content hashes and resolve actual local imports",()=>{assert.equal(cards.cards.length,2);assert.equal(cards.edges[0].to,"output.mjs");assert.equal(again.reused,2);assert.ok(cards.cards.every(card=>card.syntaxHash));});
@@ -26,9 +26,9 @@ try {
   const {ingestAgentHook}=await import("../repo-canvas/scripts/agent-hooks.mjs");
   const hook={cwd:root,session_id:"fixture-session",turn_id:"fixture-turn",hook_event_name:"UserPromptSubmit",prompt:"Уточнить приём данных"};
   const started=ingestAgentHook(hook);
-  ingestAgentHook({...hook,hook_event_name:"PostToolUse",tool_input:{file_path:path.join(root,original.entities[0].path)}});
+  const fileHook=ingestAgentHook({...hook,hook_event_name:"PostToolUse",tool_input:{file_path:path.join(root,original.entities[0].path)}});
   const afterTool=store.getSnapshot();
-  checked("hooks bind files to existing modules and reject other projects",()=>{assert.ok(afterTool.work.find(item=>item.id===started.id).targets.includes(id));assert.throws(()=>ingestAgentHook({...hook,cwd:path.dirname(root)}),/другому проекту/);});
+  checked("hooks bind files to existing modules and reject other projects",()=>{assert.ok(afterTool.work.find(item=>item.id===started.id).targets.includes(id),JSON.stringify({root,canonicalRoot:store.projectRoot,file:original.entities[0].path,id,started,fileHook,work:afterTool.work,matched:targetsForFiles(original,[path.join(root,original.entities[0].path)],store.projectRoot)}));assert.throws(()=>ingestAgentHook({...hook,cwd:path.dirname(root)}),/другому проекту/);});
   ingestAgentHook({...hook,hook_event_name:"Stop"});const endedRevision=store.getSnapshot().revision;ingestAgentHook({...hook,hook_event_name:"Stop"});
   checked("replayed Stop is idempotent and never reopens completed work",()=>{assert.equal(store.getSnapshot().revision,endedRevision);assert.equal(store.getSnapshot().work.find(item=>item.id===started.id).status,"done");});
   ingestAgentHook(hook);ingestAgentHook({...hook,hook_event_name:"PostToolUse",tool_input:{path:"input.mjs"}});
@@ -93,6 +93,18 @@ try {
   checked("a fact-verified candidate survives a readability stop with an explicit qualification",()=>{assert.equal(partial.outcome,"partial");assert.equal(store.getSnapshot().map.verification.state,"source-checked");assert.equal(store.getSnapshot().map.verification.readability,"needs-review");assert.equal(store.getSnapshot().map.skeleton,false);});
   const accepted=await runArchitect({root,refresh:true,language:"en",collectSources:false,resumeCandidate:true,runner:async()=>{throw new Error("Initial build must resume");},evidenceReviewer:async()=>{throw new Error("Unchanged verified sources need no repeat");},reviewer:async()=>answer({passed:true,summary:"Clear",answers:{project:"Input",composition:"Input processing",lifecycle:"Input to output"},issues:[]})});
   checked("a partial result resumes from verified facts without redoing the initial build",()=>{assert.ok(accepted.revision>partial.revision);assert.notEqual(store.getSnapshot().map.verification.readability,"needs-review");});
+  const verifiedRevision=store.getSnapshot().revision;
+  await assert.rejects(runArchitect({root,refresh:true,language:"en",collectSources:false,resumeCandidate:false,maxReviewRepairs:0,runner:async()=>answer(candidate),evidenceReviewer:async()=>answer({passed:false,summary:"Unsupported behaviour",sourceRequests:[],issues:[{severity:"critical",scope:"entity",id:"test-module",message:"The source does not implement that behaviour",recommendation:"Remove unsupported claim"}]}),reviewer:async()=>{throw new Error("Readability must not precede facts");}}),/evidence|source|fact|провер/i);
+  checked("a source-rejected candidate never replaces the verified map",()=>assert.equal(store.getSnapshot().revision,verifiedRevision));
+  const {collectProjectKnowledge,readProjectKnowledge,knowledgeFile}=await import("../repo-canvas/scripts/project-knowledge.mjs");
+  const {writeSourceJson}=await import("../repo-canvas/scripts/project-sources.mjs");
+  const {codexSessionAdapter}=await import("../repo-canvas/scripts/session-adapters.mjs");
+  const log=path.join(root,"rollout-owner.jsonl");const record=(type,payload)=>JSON.stringify({type,payload,timestamp:"2026-09-27T00:00:00Z"});
+  fs.writeFileSync(log,[record("session_meta",{id:"owner-dialog",cwd:root,originator:"codex_desktop"}),record("event_msg",{type:"task_started",turn_id:"owner-turn"}),record("event_msg",{type:"user_message",message:"Explain how requests reach their result."}),record("event_msg",{type:"user_message",message:"Keep my own terminology."}),record("event_msg",{type:"agent_message",message:"An unapproved proposal."})].join("\n")+"\n");
+  const sourceOptions={adapters:[{...codexSessionAdapter,listFiles:()=>[log]}]};let knowledgeCalls=0;
+  const collect=()=>collectProjectKnowledge(root,{sourceOptions,userOnly:true,maxBatches:1,language:"en",call:async()=>{knowledgeCalls++;const latest=readProjectKnowledge(root);writeSourceJson(knowledgeFile(root),{...latest,profile:{...latest.profile,explicitInstructions:["Concurrent owner instruction"]}});return answer({intent:"",intentSourceIds:[],decisions:[],unresolved:[],profile:{language:"en",framing:"",detail:"",terms:[],sourceIds:[],uncertainty:"",shouldUpdate:false}});}});
+  const learned=await collect();await collect();
+  checked("bounded owner backfill reaches full user-message coverage and preserves concurrent instructions",()=>{assert.equal(learned.knowledge.coverage.analyzedUserMessages,2);assert.equal(knowledgeCalls,1);assert.ok(readProjectKnowledge(root).profile.explicitInstructions.includes("Concurrent owner instruction"));});
   const file=path.resolve("output/review-2026-09-27/integration.json");fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({at:new Date().toISOString(),modelCalls:0,results},null,2));
   console.log(JSON.stringify({passed:results.length,modelCalls:0,report:file}));
 } finally {
