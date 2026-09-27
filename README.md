@@ -69,7 +69,7 @@ repo-canvas start
 
 Default `init` creates `.repo-canvas/` and a local Git exclusion; it does not edit `package.json`, instructions or hooks. Explicit `init --project-install` retains project-local npm scripts. Install and authenticate a model CLI separately, then choose **Update map**. The first structure is clearly marked as file/import facts, not a verified product explanation.
 
-Browser updates arrive through SSE; HTTP polling resumes when the stream is unavailable. Hashed assets use immutable caching. The updater requires both SHA-256 integrity and GitHub build provenance, verified by the installed `gh` CLI against this repository, its release workflow and the exact version tag. Missing verification fails closed and restores the previous runtime. A locally built package is distinct from a published signed release.
+Browser updates arrive through SSE; HTTP polling resumes when the stream is unavailable. Hashed assets use immutable caching. The updater requires both SHA-256 integrity and GitHub build provenance, verified by an installed, authenticated `gh` CLI against this repository, its release workflow and the exact version tag. Authenticate using the CLI's normal `gh auth login` flow; Repo Canvas does not save GitHub credentials. Authentication available only inside a shell wrapper is not automatically inherited by a background server. Missing verification fails closed and restores the previous runtime.
 
 [Connect MCP and hooks](docs/agent-connections.md) · [Five-question evaluation](docs/evaluation.md)
 
