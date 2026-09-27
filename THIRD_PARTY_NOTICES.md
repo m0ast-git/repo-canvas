@@ -25,6 +25,12 @@ Repo Canvas remains licensed under the MIT License. It includes the following th
 - Package: `@mr_mint/elkjs-libavoid` 0.5.0
 - License: MIT
 - Source: https://github.com/MrMint/elkjs-libavoid
+- Delivered worker license: [public/licenses/elkjs-libavoid-MIT.txt](public/licenses/elkjs-libavoid-MIT.txt).
+
+## ELK.js worker
+
+- Package: `elkjs` 0.12.0, EPL-2.0; https://github.com/kieler/elkjs.
+- The worker remains a separate asset. Full license and upstream third-party notices: [public/licenses/ELK-EPL-2.0.md](public/licenses/ELK-EPL-2.0.md).
 
 ## libavoid-js / Adaptagrams libavoid
 
@@ -33,7 +39,7 @@ Repo Canvas remains licensed under the MIT License. It includes the following th
 - Package source: https://github.com/Aksem/libavoid-js
 - Upstream algorithm: https://github.com/mjwybrow/adaptagrams/tree/master/libavoid
 
-Repo Canvas distributes the upstream `libavoid.wasm` binary and a bundled JavaScript loader. The complete LGPL license text is included by the installed `libavoid-js` dependency at `node_modules/libavoid-js/LICENSE`; the corresponding source is available from the links above.
+Repo Canvas distributes the upstream `libavoid.wasm` binary and a bundled JavaScript loader. The complete LGPL text is shipped in [public/licenses/libavoid-LGPL-2.1.txt](public/licenses/libavoid-LGPL-2.1.txt); corresponding library source is available from the links above. The WASM asset remains separately replaceable. Vite also generates [public/licenses/bundled-dependencies.md](public/licenses/bundled-dependencies.md) from the bundled dependency licenses, so moving build libraries to devDependencies does not remove their notices from the delivered app.
 
 ## IBM Plex Sans
 

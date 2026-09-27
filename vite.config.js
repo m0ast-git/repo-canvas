@@ -17,6 +17,7 @@ export default defineConfig({
     outDir: "../public",
     emptyOutDir: false,
     sourcemap: false,
+    license: { fileName: "licenses/bundled-dependencies.md" },
     target: "es2022",
     assetsDir: "assets",
     rolldownOptions: {

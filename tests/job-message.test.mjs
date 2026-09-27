@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import {jobMessage,jobStatistics,jobElapsedMs} from "../client/src/job-message.js";
 import {trackModelUsage} from "../repo-canvas/scripts/model-usage.mjs";
 
+test("unsupported CLI versions and account models lead to settings without raw service errors",()=>{
+  for(const error of ["The model requires a newer version of Codex", "Unknown feature flag: skill_search", "The model is not supported when using Codex with a ChatGPT account"]){
+    const message=jobMessage({status:"failed",error});
+    assert.equal(message.action,"settings");assert.doesNotMatch(message.body,/skill_search|ChatGPT account|requires a newer/);
+  }
+});
+
 test("an unverified result cannot appear as a successful update or expose a verifier monologue",()=>{
   const job={status:"done",kind:"code-review",result:{verified:false,summary:"Пакет доказательств: независимый эксперт не подтвердил ELK worker"}};
   const message=jobMessage(job);assert.equal(message.tone,"warning");assert.equal(message.label,"Обновить");

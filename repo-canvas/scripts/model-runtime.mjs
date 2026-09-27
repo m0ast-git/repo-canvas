@@ -51,6 +51,13 @@ export function codexTarget(platform = process.platform, arch = process.arch) {
 
 export function resolveCodexExecutable(platform = process.platform, arch = process.arch) {
   const target = codexTarget(platform, arch);
+  // A checkout's explicit development dependency takes precedence, as with
+  // normal npm tools. Published packages do not install it; they use PATH.
+  try {
+    const manifest=require.resolve(`${target.packageName}/package.json`);
+    const local=path.join(path.dirname(manifest),"vendor",target.targetTriple,"bin",target.binaryName);
+    if(existsSync(local))return local;
+  } catch {}
   for(const directory of (process.env.PATH||"").split(path.delimiter)) {
     const direct=path.join(directory,target.binaryName);if(existsSync(direct))return direct;
     const globalBinary=path.join(directory,"node_modules",target.packageName,"vendor",target.targetTriple,"bin",target.binaryName);
@@ -58,15 +65,7 @@ export function resolveCodexExecutable(platform = process.platform, arch = proce
     const nestedBinary=path.join(directory,"node_modules","@openai","codex","node_modules",target.packageName,"vendor",target.targetTriple,"bin",target.binaryName);
     if(existsSync(nestedBinary))return nestedBinary;
   }
-  let packagePath;
-  try {
-    packagePath = require.resolve(`${target.packageName}/package.json`);
-  } catch {
-    throw new Error("Codex CLI не найден. Установите его отдельно: npm install -g @openai/codex, затем выполните codex login.");
-  }
-  const executable = path.join(path.dirname(packagePath), "vendor", target.targetTriple, "bin", target.binaryName);
-  if (!existsSync(executable)) throw new Error(`Codex executable is missing: ${executable}`);
-  return executable;
+  throw new Error("Codex CLI не найден. Установите его отдельно: npm install -g @openai/codex, затем выполните codex login.");
 }
 
 const modelProcesses = new Set();

@@ -130,6 +130,8 @@ try {
   assert.ok(packedAssets.some((name) => name.startsWith("elk-worker.min-") && name.endsWith(".js")), "Packed ELK worker missing");
   const libavoidWasm = packedAssets.find((name) => name.startsWith("libavoid-") && name.endsWith(".wasm"));
   assert.ok(libavoidWasm, "Packed libavoid WASM runtime missing");
+  assert.ok(fs.existsSync(path.join(installedPublic,"licenses","libavoid-LGPL-2.1.txt")),"Bundled WASM license missing");
+  assert.ok(fs.existsSync(path.join(installedPublic,"licenses","bundled-dependencies.md")),"Bundled client dependency notices missing");
   assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "THIRD_PARTY_NOTICES.md")), "Third-party routing notice missing");
   const externalManifest = fs.readFileSync(path.join(root, "package.json"));
   run(process.execPath, [installedCli, "init"], root);
