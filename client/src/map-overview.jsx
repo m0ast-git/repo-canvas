@@ -5,7 +5,8 @@ import {displaceOverlappingAreas} from "./container-layout.js";
 import {WorkActivity} from "./canvas-card.jsx";
 import {ConnectionMarkers,connectionMarkerId} from "./design-system/connection-markers.jsx";
 
-const linksLabel=count=>`${count} ${count%10===1&&count%100!==11?"связь":[2,3,4].includes(count%10)&&![12,13,14].includes(count%100)?"связи":"связей"}`;
+const countLabel=(count,forms)=>`${count} ${count%10===1&&count%100!==11?forms[0]:[2,3,4].includes(count%10)&&![12,13,14].includes(count%100)?forms[1]:forms[2]}`;
+const linksLabel=count=>countLabel(count,["связь","связи","связей"]);
 
 export function overviewRectangles(rects,zoom) {
   let result=new Map([...rects].map(([id,rect])=>[id,{...rect,width:Math.max(rect.width,300/zoom),height:Math.max(rect.height,282/zoom)}]));
@@ -47,7 +48,7 @@ export function MapOverview({snapshot,rects,zoom,colors,activity,onArea,onEntity
       return <section className={`overview-area nodrag nopan ${members.length&&planned===members.length?"is-planned":""}`} key={area.id} style={{left:rect.x,top:rect.y,width:rect.width,height:rect.height,"--area-color":colors.get(area.id)}}>
         <div className="overview-area-content" style={{width:rect.width*zoom,height:rect.height*zoom,transform:`scale(${1/zoom})`}}>
           {active>0&&<WorkActivity count={active} pulsing={!snapshot._history}/>}
-          <button className="overview-area-title" onClick={()=>onArea(area.id)}><small>{members.length} модулей{active>0&&` · ${active} в работе`}</small><strong>{area.ownerTitle||area.title}</strong><span>{area.ownerNote||area.note||"Часть проекта"}</span></button>
+          <button className="overview-area-title" onClick={()=>onArea(area.id)}><small>{countLabel(members.length,["модуль","модуля","модулей"])}{active>0&&` · ${active} в работе`}</small><strong>{area.ownerTitle||area.title}</strong><span>{area.ownerNote||area.note||"Часть проекта"}</span></button>
           <div className="overview-modules">{top.map(item=><button key={item.id} onClick={()=>onEntity(item)}>{item.ownerLabel||item.label}</button>)}{members.length>top.length&&<button onClick={()=>onArea(area.id)}>Ещё {members.length-top.length} →</button>}</div>
           <footer>{problem>0&&<span className="overview-problem">Нужно проверить: {problem}</span>}{planned>0&&<span>В планах: {planned}</span>}{!problem&&!planned&&<span>Открыть область →</span>}</footer>
         </div>

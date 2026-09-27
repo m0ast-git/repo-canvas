@@ -70,7 +70,8 @@ export function selectInitialReferences(root,index,snapshot) {
 export function targetsForFiles(snapshot,files,root="") {
   // Match the same path identity used by project-root (macOS /var symlinks and
   // Windows short TEMP aliases can differ from the path reported by a hook).
-  const canonical=file=>{try{return fs.realpathSync(file);}catch{try{return path.join(fs.realpathSync(path.dirname(file)),path.basename(file));}catch{return path.resolve(file);}}};
+  const realpath=fs.realpathSync.native||fs.realpathSync;
+  const canonical=file=>{try{return realpath(file);}catch{try{return path.join(realpath(path.dirname(file)),path.basename(file));}catch{return path.resolve(file);}}};
   const normalize=file=>{const value=String(file).replaceAll("\\","/");return process.platform==="win32"?value.toLowerCase():value;};
   const base=root?canonical(root):"";
   const normalized=files.map(file=>String(file)).map(file=>normalize(base&&path.isAbsolute(file)?path.relative(base,canonical(file)):file.replace(/^\.\//,"")));
