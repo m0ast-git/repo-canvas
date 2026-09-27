@@ -36,7 +36,7 @@
     "canvas": "node repo-canvas/scripts/canvas.mjs",
     "canvas:start": "node repo-canvas/scripts/canvas.mjs start",
     "canvas:check": "node repo-canvas/scripts/canvas.mjs check",
-    "test": "node --test --test-concurrency=4 tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "test:stress": "node tests/observer-stress.mjs && node tests/session-adapters-stress.mjs",
     "test:package": "node tests/package-smoke.mjs",
     "test:update": "node tests/self-update-smoke.mjs",
