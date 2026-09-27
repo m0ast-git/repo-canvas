@@ -2,10 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  CONTAINER_ITEM_GAP, CONTAINER_PADDING_X, CONTAINER_PADDING_Y,
+  AREA_HEADER_HEIGHT, CONTAINER_ITEM_GAP, CONTAINER_PADDING_X, CONTAINER_PADDING_Y,
   compactContainerMembership, displaceOverlappingAreas, normalizeStoredEntityPositions,
-  orderAreaItemsForDrop, orderItemsForDrop, packAreaGrid, packVerticalContainer,
+  orderAreaItemsForDrop, orderItemsForDrop, packAreaGrid, packVerticalContainer, restoredLayoutPosition,
 } from "../client/src/container-layout.js";
+
+test("renaming after layout migration keeps the visible position; a new drag still wins",()=>{
+  const item={x:60,y:240,label:"Новое название"},previous={x:800,y:300};
+  assert.deepEqual(restoredLayoutPosition(item,previous,[60,240]),{x:800,y:300});
+  assert.deepEqual(restoredLayoutPosition({...item,x:850},previous,[60,240]),{x:850,y:240});
+});
 
 test("legacy stored overlaps fall back to collision-free layout positions", () => {
   const snapshot = {
@@ -61,6 +67,16 @@ test("legacy children clear their container header and each other as whole subtr
   assert.equal(normalized.get("second").x, 540);
 });
 
+test("an obsolete child above its new parent returns inside the container", () => {
+  const snapshot = { entities: [{ id: "parent", areaId: "area" }, { id: "child", areaId: "area", parentId: "parent" }] };
+  const parent = { x: 100, y: 200, width: 420, height: 400, headerWidth: 420, headerHeight: 80 };
+  const child = { x: 140, y: 340, width: 120, height: 80 };
+  const defaults = new Map([["parent", parent], ["child", child]]);
+  const current = new Map([["parent", parent], ["child", { ...child, y: -200 }]]);
+  const result = normalizeStoredEntityPositions(snapshot, current, defaults, new Map([["area", { x: 0, y: 0, width: 800, height: 800 }]]));
+  assert.deepEqual(result.get("child"), child);
+});
+
 test("drop order uses the pointer only as an insertion index", () => {
   const items = [
     { id: "first", rect: { x: 40, y: 200, width: 100, height: 80 } },
@@ -99,8 +115,8 @@ test("area grid uses the same deterministic slot for preview and commit", () => 
   const preview = packAreaGrid({ areaRect, items, movingId: "moving", dropPoint: { x: 410, y: 300 } });
   const commit = packAreaGrid({ areaRect, items, movingId: "moving", dropPoint: { x: 410, y: 300 } });
   assert.deepEqual(preview.slot, commit.slot);
-  assert.ok(preview.placements.every((item) => item.y >= areaRect.y + 150 + CONTAINER_PADDING_Y));
-  assert.ok(preview.height < areaRect.height, "automatic packing should remove stale empty space");
+  assert.ok(preview.placements.every((item) => item.y >= areaRect.y + AREA_HEADER_HEIGHT + CONTAINER_PADDING_Y));
+  assert.ok(preview.width / preview.height <= 3.5 && preview.height / preview.width < 2, "landscape packing may use one readable row, but must not become an elongated strip");
   const expanded = packAreaGrid({ areaRect, items, minimumWidth: 1100, minimumHeight: 760 });
   assert.equal(expanded.width, 1100);
   assert.equal(expanded.height, 760);
@@ -117,7 +133,7 @@ test("overlapping areas are displaced deterministically without overlap", () => 
   assert.ok(tail.x >= right.x + right.width + 60 || tail.y >= right.y + right.height + 60);
 });
 
-test("membership change compacts the source and inserts into the target atomically", () => {
+test("membership change preserves the source and inserts into the target atomically", () => {
   const snapshot = {
     entities: [
       { id: "group", parentId: "" },
@@ -137,7 +153,7 @@ test("membership change compacts the source and inserts into the target atomical
     positions: new Map([["entity:moving", { x: 40, y: 272 }]]),
   }, "", { dx: 500, dy: 0 }, 312);
   const detachedMoves = new Map(detached.moves.map((move) => [move.id, move]));
-  assert.deepEqual({ x: detachedMoves.get("entity:last").x, y: detachedMoves.get("entity:last").y }, { x: 40, y: 272 });
+  assert.equal(detachedMoves.has("entity:last"),false,"Extraction leaves the source contents in place");
   assert.deepEqual({ x: detachedMoves.get("entity:moving").x, y: detachedMoves.get("entity:moving").y }, { x: 540, y: 272 });
 
   const detachedSnapshot = { ...snapshot, entities: snapshot.entities.map((entity) => entity.id === "moving" ? { ...entity, parentId: "" } : entity) };
@@ -147,6 +163,6 @@ test("membership change compacts the source and inserts into the target atomical
     positions: new Map([["entity:moving", { x: 540, y: 272 }]]),
   }, "group", { dx: 0, dy: 0 }, 250);
   const attachedMoves = new Map(attached.moves.map((move) => [move.id, move]));
-  assert.deepEqual({ x: attachedMoves.get("entity:moving").x, y: attachedMoves.get("entity:moving").y }, { x: 40, y: 272 });
-  assert.deepEqual({ x: attachedMoves.get("entity:last").x, y: attachedMoves.get("entity:last").y }, { x: 40, y: 428 });
+  assert.deepEqual({ x: attachedMoves.get("entity:moving").x, y: attachedMoves.get("entity:moving").y }, { x: CONTAINER_PADDING_X, y: 76 + CONTAINER_PADDING_Y + 80 + CONTAINER_ITEM_GAP });
+  assert.deepEqual({ x: attachedMoves.get("entity:last").x, y: attachedMoves.get("entity:last").y }, { x: CONTAINER_PADDING_X, y: 76 + CONTAINER_PADDING_Y + 2*(80 + CONTAINER_ITEM_GAP) });
 });

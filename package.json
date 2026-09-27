@@ -1,6 +1,6 @@
 {
   "name": "repo-canvas",
-  "version": "0.12.0",
+  "version": "0.14.0",
   "description": "A local semantic repository map with live Codex, Claude Code and Kimi Code work",
   "type": "module",
   "license": "MIT",
@@ -20,6 +20,7 @@
     "repo-canvas",
     "server.mjs",
     "README.md",
+    "docs",
     "INSTALL_WITH_AGENT.txt",
     "THIRD_PARTY_NOTICES.md"
   ],
@@ -35,10 +36,11 @@
     "canvas": "node repo-canvas/scripts/canvas.mjs",
     "canvas:start": "node repo-canvas/scripts/canvas.mjs start",
     "canvas:check": "node repo-canvas/scripts/canvas.mjs check",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test --test-concurrency=4 tests/*.test.mjs",
     "test:stress": "node tests/observer-stress.mjs && node tests/session-adapters-stress.mjs",
     "test:package": "node tests/package-smoke.mjs",
-    "test:update": "node tests/self-update-smoke.mjs"
+    "test:update": "node tests/self-update-smoke.mjs",
+    "test:review": "node tests/review-integration.mjs"
   },
   "keywords": [
     "agents",
@@ -49,15 +51,29 @@
     "kimi"
   ],
   "dependencies": {
+    "@vscode/tree-sitter-wasm": "0.3.1",
+    "ajv": "8.20.0",
+    "@modelcontextprotocol/sdk": "1.30.1",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.5",
+    "vite": "^8.2.1",
     "@mr_mint/elkjs-libavoid": "0.5.0",
-    "@openai/codex": "0.147.0",
+    "@openai/codex": "0.153.4",
+    "@phosphor-icons/react": "2.1.10",
+    "@tanstack/react-query": "5.102.8",
     "@xyflow/react": "^12.11.3",
     "elkjs": "^0.12.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^6.0.5",
-    "vite": "^8.2.1"
+  "peerDependencies": {
+    "@openai/codex": ">=0.144.0"
+  },
+  "peerDependenciesMeta": {
+    "@openai/codex": {
+      "optional": true
+    }
   }
 }

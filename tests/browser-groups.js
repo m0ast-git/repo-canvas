@@ -1,0 +1,35 @@
+async (page) => {
+  const check=(value,message)=>{if(!value)throw new Error(message);};
+  const state=()=>page.evaluate(async()=> (await fetch('/api/state')).json());
+  const current=await state();
+  const parent=current.entities.find(e=>e.id==='module-1');
+  const child={...current.entities.find(e=>e.id==='module-0'),x:parent.x+40,y:parent.y+180};
+  await page.evaluate(async ({revision,child})=>{const response=await fetch('/api/layout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({canvasRevision:revision,items:[{kind:'entity',id:child.id,parentId:'module-1',x:child.x,y:child.y}]})});if(!response.ok)throw new Error(await response.text());},{revision:current.revision,child});
+  await page.reload();
+  await page.getByRole('button',{name:'Приём заявок 10 элементов',exact:true}).click();
+  const group=page.locator('[data-id="entity:module-1"] .group-node header');
+  await group.waitFor();await page.waitForTimeout(600);
+  const before=await state();const box=await group.boundingBox();
+  await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();
+  await page.mouse.move(box.x+box.width/2+25,box.y+box.height/2+25,{steps:3});
+  const save=page.waitForResponse(r=>r.url().endsWith('/api/layout')&&r.request().method()==='POST');await page.mouse.up();check((await save).ok(),'Group drag failed');
+  const after=await state();
+  const delta=id=>{const a=after.entities.find(e=>e.id===id),b=before.entities.find(e=>e.id===id);return [a.x-b.x,a.y-b.y];};
+  const parentDelta=delta('module-1'),childDelta=delta('module-0');
+  check(parentDelta[0]!==0 && Math.abs(parentDelta[0]-childDelta[0])<.01 && Math.abs(parentDelta[1]-childDelta[1])<.01,'Subtree drifted');
+  await page.keyboard.press('Control+z');await page.getByText('Отменено: перемещение элемента',{exact:true}).waitFor();
+  let restored=await state();check(restored.entities.find(e=>e.id==='module-1').x===before.entities.find(e=>e.id==='module-1').x,'Group undo failed');
+  await page.keyboard.press('Control+Shift+z');await page.getByText('Повторено: перемещение элемента',{exact:true}).waitFor();
+  restored=await state();check(restored.entities.find(e=>e.id==='module-1').x===after.entities.find(e=>e.id==='module-1').x,'Group redo failed');
+  const resize=page.locator('[data-id="area:area-0"] .area-resize-control');
+  await page.getByRole('button',{name:'Показать всё',exact:true}).click();await page.waitForTimeout(600);
+  const handle=await resize.boundingBox();
+  await page.mouse.move(handle.x+handle.width/2,handle.y+handle.height/2);await page.mouse.down();
+  await page.mouse.move(handle.x+handle.width/2+35,handle.y+handle.height/2+30,{steps:3});
+  const resized=page.waitForResponse(r=>r.url().endsWith('/api/layout')&&r.request().method()==='POST');await page.mouse.up();check((await resized).ok(),'Area resize failed');
+  const size=(await state()).areas.find(a=>a.id==='area-0');check(size.minWidth>0&&size.minHeight>0,'Manual size missing');
+  await page.reload();await page.locator('[data-id="area:area-0"]').waitFor();
+  check((await state()).areas.find(a=>a.id==='area-0').minWidth===size.minWidth,'Size lost on reload');
+  await page.screenshot({path:'output/playwright/stage1-groups.png'});
+  return {subtreeDelta:parentDelta,undoRedo:true,resizeReload:true};
+}

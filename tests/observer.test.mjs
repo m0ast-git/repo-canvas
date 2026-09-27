@@ -152,7 +152,7 @@ test("observer follows owner language and preserves owner-facing map vocabulary"
   assert.match(prompt, /"ownerLabel":"Выгрузка"/);
 });
 
-test("observer publishes immediately, classifies deltas, and removes concepts only at completion", async () => {
+test("observer publishes immediately and retains proposed changes until source verification", async () => {
   emit("area.upsert", { id: "core", title: "Core", note: "", order: 1 });
   emit("entity.upsert", {
     id: "legacy", areaId: "core", label: "Legacy", status: "operational", path: "src/legacy",
@@ -206,7 +206,8 @@ test("observer publishes immediately, classifies deltas, and removes concepts on
   await observer.tick();
   snapshot = store.getSnapshot();
   assert.equal(calls, 2);
-  assert.ok(!snapshot.entities.some((entity) => entity.id === "legacy"));
+  assert.ok(snapshot.entities.some((entity) => entity.id === "legacy"), "completion alone does not prove removal");
+  assert.equal(snapshot.work.at(-1).verification.state, "pending");
   assert.equal(snapshot.work.at(-1).status, "done");
   assert.equal(snapshot.work.at(-1).session.kind, "codex-app");
 });
@@ -321,7 +322,7 @@ test("architect emits a DDD hierarchy, explanatory contracts, key flows, and map
   const model = {
     projectTitle: "Order platform", projectSummary: "Accepts and fulfils customer orders",
     layoutIntent: "flow", layoutDirection: "RIGHT",
-    keyFlows: [{ id: "order-to-cash", title: "Order to cash", trigger: "customer submits order", outcome: "order is fulfilled", steps: ["sales", "checkout", "fulfilment"] }],
+    keyFlows: [{ id: "order-to-cash", title: "Order to cash", trigger: "customer submits order", outcome: "order is fulfilled", steps: ["checkout", "fulfilment"] }],
     unresolvedQuestions: ["Who owns manual refunds?"],
     areas: [
       { id: "sales-domain", title: "Sales", note: "Owns commercial intent", color: "#ef9a72", evidence: ["src/sales"], order: 1 },
@@ -338,7 +339,7 @@ test("architect emits a DDD hierarchy, explanatory contracts, key flows, and map
   const events = semantic.architectureEvents(model, { actor: "architect-test", language: "en" });
   assert.equal(events[0].type, "map.upsert");
   assert.equal(events[0].payload.language, "en");
-  assert.deepEqual(events[0].payload.keyFlows[0].steps, ["sales", "checkout", "fulfilment"]);
+  assert.deepEqual(events[0].payload.keyFlows[0].steps, ["checkout", "fulfilment"]);
   assert.ok(events.findIndex((event) => event.payload.id === "sales") < events.findIndex((event) => event.payload.id === "checkout"));
   assert.equal(events.find((event) => event.type === "relation.upsert").payload.label, "publishes accepted order");
   for (const event of events) assert.deepEqual(schema.validateEvent(event), []);
@@ -391,14 +392,15 @@ test("architect repairs invalid cross-references inside the same Sol session", a
   assert.deepEqual(result.reviewThreadIds, ["review-thread"]);
   assert.deepEqual(result.threadIds, ["repair-thread"]);
   assert.equal(sessionsSeen[0], sessionsSeen[1]);
-  assert.equal(result.usage.inputTokens, 200);
+  assert.ok(result.usage.inputTokens >= 200, "known usage is retained; provider output without usage is estimated");
   assert.equal(result.usage.cachedInputTokens, 80);
   assert.equal(result.usage.outputTokens, 40);
   const auditRecords = fs.readFileSync(result.auditFile, "utf8").trim().split(/\r?\n/).map(JSON.parse).filter((item) => item.runId === result.auditRunId);
   assert.equal(auditRecords.filter((item) => item.type === "model.completed").length, 3);
   assert.equal(auditRecords.at(-1).type, "run.completed");
   assert.match(repairOptions.prompt, /Do not inspect files, run tools/);
-  assert.deepEqual(repairOptions.outputSchema.properties.keyFlows.items.properties.steps.items.enum.includes("invented-action"), false);
+  assert.equal(repairOptions.outputSchema.properties.keyFlows.items.properties.steps,undefined);
+  assert.ok(repairOptions.outputSchema.properties.keyFlows.items.properties.transitions.items.properties.relationId.enum.every(id=>id!=="invented-action"));
   assert.deepEqual(repairOptions.outputSchema.properties.areas.items.properties.id.enum, ["repair-area"]);
   assert.deepEqual(repairOptions.outputSchema.properties.entities.items.properties.id.enum.sort(), ["repair-entry", "repair-output"]);
   assert.ok(phases.includes("repairing"));
@@ -432,7 +434,7 @@ test("architect keeps people outside areas and requires a meaningful relation", 
   assert.equal(work.payload.provisional, true);
 });
 
-test("blind review sends focused feedback back into the same Sol session", async () => {
+test("blind review refines the retained candidate in a bounded fresh context", async () => {
   const initial = {
     projectTitle: "Fixture", projectSummary: "Technical subsystems", layoutIntent: "domain", layoutDirection: "AUTO", keyFlows: [], unresolvedQuestions: [],
     areas: [{ id: "misc", title: "User product", note: "Mixed things", color: "#ef9a72", evidence: [], order: 1 }],
@@ -447,9 +449,10 @@ test("blind review sends focused feedback back into the same Sol session", async
   let architectCalls = 0;
   let reviewCalls = 0;
   const sessionsSeen = [];
+  const promptsSeen = [];
   const result = await architect.runArchitect({
     root, refresh: false,
-    runner: async (options) => { sessionsSeen.push(options.session); return { value: architectCalls++ === 0 ? initial : regenerated, profile: { model: "fake-sol", effort: "medium" }, threadId: "architect-session", resumed: architectCalls > 1 }; },
+    runner: async (options) => { sessionsSeen.push(options.session); promptsSeen.push(options.prompt); return { value: architectCalls++ === 0 ? initial : regenerated, profile: { model: "fake-sol", effort: "medium" }, threadId: "architect-session", resumed: architectCalls > 1 }; },
     reviewer: async () => ({
       value: reviewCalls++ === 0
         ? approvedReview({ passed: false, summary: "The project purpose is unclear", answers: { project: "Unknown", composition: "Mixed", lifecycle: "Unknown" }, issues: [{ severity: "critical", scope: "map", id: "map", message: "No end-to-end purpose", recommendation: "Explain input and result" }] })
@@ -460,7 +463,10 @@ test("blind review sends focused feedback back into the same Sol session", async
   assert.equal(result.semanticRegenerations, 0);
   assert.equal(result.acceptanceRepairs, 1);
   assert.equal(result.semanticReviews, 2);
-  assert.equal(sessionsSeen[0], sessionsSeen[1]);
+  assert.ok(sessionsSeen[0]);
+  assert.equal(sessionsSeen[1], undefined);
+  assert.ok(promptsSeen[1].includes(JSON.stringify(initial)));
+  assert.match(promptsSeen[1],/No end-to-end purpose/);
   assert.deepEqual(result.threadIds, ["architect-session"]);
   assert.equal(store.getSnapshot().map.projectSummary, regenerated.projectSummary);
 });
@@ -477,7 +483,7 @@ test("failed acceptance preserves every reviewer verdict and token total", async
   try {
     await architect.runArchitect({
       root, refresh: false, maxReviewRepairs: 1,
-      runner: async () => ({ value: structuredClone(candidate), profile: { model: "fake-sol", effort: "medium" }, threadId: "persistent-sol", usage: { input_tokens: 100, output_tokens: 10 } }),
+      runner: async options => ({ value: structuredClone(options.outputSchema.properties.projectTitle?candidate:{entities:candidate.entities}), profile: { model: "fake-sol", effort: "medium" }, threadId: "persistent-sol", usage: { input_tokens: 100, output_tokens: 10 } }),
       reviewer: async () => ({ value: structuredClone(rejection), profile: { model: "fake-luna", effort: "low" }, threadId: crypto.randomUUID(), usage: { input_tokens: 20, output_tokens: 5 } }),
     });
   } catch (error) { caught = error; }
@@ -569,7 +575,7 @@ test("idle observer polls do not rewrite unchanged state", async () => {
 test("architect prompt makes owner language and reference preflight explicit", () => {
   const prompt = architect.architectPrompt({ snapshot: store.getSnapshot(), refresh: true, viewpoint: "Покажи проект языком владельца" });
   assert.match(prompt, /owner viewpoint is the strongest language signal/);
-  assert.match(prompt, /keyFlow step is an exact id/);
+  assert.match(prompt, /ordered list of transitions naming actual relationId/);
   assert.match(prompt, /Mandatory preflight/);
   assert.match(prompt, /Покажи проект языком владельца/);
 });
@@ -608,4 +614,15 @@ test("completed observer work may remain provisional when no semantic target was
   assert.equal(event.payload.provisional, true);
   assert.deepEqual(event.payload.targets, []);
   assert.deepEqual(schema.validateEvent(event), []);
+});
+
+test("known vocabulary is repaired without extra model calls or regenerating architecture", async()=>{
+  const candidate={projectTitle:"Проверка языка",projectSummary:"Понятное описание проекта",layoutIntent:"domain",layoutDirection:"RIGHT",keyFlows:[],unresolvedQuestions:[],areas:[{id:"wording-area",title:"Запуск проекта",note:"Средства запуска",evidence:[],order:1}],entities:[{id:"wording-node",areaId:"wording-area",parentId:"",label:"Запуск",kind:"module",status:"operational",path:"",purpose:"Запускает проект",note:"Прежний Runtime bootstrap",evidence:[],order:1}],relations:[],removedAreaIds:[],removedEntityIds:[],removedRelationIds:[]};
+  let builds=0,edits=0;
+  const result=await architect.runArchitect({root,refresh:false,language:"ru",collectSources:false,resumeCandidate:false,
+    runner:async()=>{builds++;return {value:candidate,usage:{input_tokens:100,output_tokens:50}};},
+    reviewer:async options=>{if(options.outputSchema.properties.edits){edits++;assert.ok(options.prompt.length<2000);return {value:{edits:[{field:"entity.wording-node.note",text:edits===1?"Прежний Runtime bootstrap":"Прежний блок запуска"}]},usage:{input_tokens:100,output_tokens:20}};}return {value:approvedReview(),usage:{input_tokens:100,output_tokens:20}};}
+  });
+  assert.equal(builds,1);assert.equal(edits,0);assert.equal(result.repairs,0);
+  assert.doesNotMatch(store.getSnapshot().entities.find(item=>item.id==="wording-node").note,/\bruntime\b/i);
 });

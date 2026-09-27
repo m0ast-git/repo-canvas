@@ -1,6 +1,7 @@
+export const NODE_READABLE_ZOOM = .5;
+
 export function settleViewportTransform(next, size, anchor, pixelRatio = 1) {
-  const step = next.zoom < .15 ? .005 : next.zoom < .4 ? .01 : .025;
-  const zoom = Math.max(.025, Math.min(1.7, Math.round(next.zoom / step) * step));
+  const zoom = Math.max(.025, Math.min(1.7, next.zoom));
   const focus = anchor || { x: size.width / 2, y: size.height / 2 };
   const world = {
     x: (focus.x - next.x) / next.zoom,

@@ -1,11 +1,20 @@
 import { boundingRect, nodeRect } from "./drag-geometry.js";
 import { graphHierarchy } from "./graph-contract.js";
+import { AREA_HEADER_HEIGHT } from "./node-geometry.js";
+export { AREA_HEADER_HEIGHT };
 
-export const CONTAINER_PADDING_X = 40;
-export const CONTAINER_PADDING_Y = 40;
-export const CONTAINER_ITEM_GAP = 76;
-export const AREA_HEADER_HEIGHT = 150;
-export const AREA_ITEM_GAP = 76;
+export const LAYOUT_VERSION = 11;
+export const CONTAINER_PADDING_X = 24;
+export const CONTAINER_PADDING_Y = 24;
+export const CONTAINER_ITEM_GAP = 48;
+export const AREA_ITEM_GAP = 80;
+
+export function restoredLayoutPosition(item, previous, recordedPosition) {
+  const current=[item.x??null,item.y??null];
+  if(previous&&JSON.stringify(current)===JSON.stringify(recordedPosition||[null,null]))return {x:previous.x,y:previous.y};
+  if(Number.isFinite(item.x)&&Number.isFinite(item.y))return {x:item.x,y:item.y};
+  return previous?{x:previous.x,y:previous.y}:null;
+}
 
 function rectanglesOverlap(a, b, gap = 0) {
   return a.x - gap < b.x + b.width
@@ -46,7 +55,7 @@ export function normalizeStoredEntityPositions(snapshot, entityRects, defaultRec
     const obstacles = header ? [header] : [];
     const currentBounds = ids.map((id) => ({ id, rect: subtreeBounds(output, id) }))
       .filter((item) => item.rect.width && item.rect.height);
-    const invalid = currentBounds.some(({ rect }, index) => obstacles.some((obstacle) => rectanglesOverlap(rect, obstacle, gap))
+    const invalid = currentBounds.some(({ rect }, index) => (header && (rect.y < header.y + header.height + gap || rect.x < header.x)) || obstacles.some((obstacle) => rectanglesOverlap(rect, obstacle, gap))
       || currentBounds.slice(0, index).some((previous) => rectanglesOverlap(rect, previous.rect, gap)));
 
     if (invalid) {
@@ -74,7 +83,7 @@ export function normalizeStoredEntityPositions(snapshot, entityRects, defaultRec
     const header = area ? {
       x: area.x + 18,
       y: area.y + 14,
-      width: Math.max(0, Math.min(560, area.width - 36)),
+      width: Math.max(0, area.width - 36),
       height: AREA_HEADER_HEIGHT - 20,
     } : null;
     normalizeSiblings(ids, header);
@@ -142,28 +151,31 @@ export function packAreaGrid({
   items,
   movingId = "",
   dropPoint = null,
-  headerHeight = AREA_HEADER_HEIGHT,
+  headerHeight = AREA_HEADER_HEIGHT + 12,
   minimumWidth = 0,
   minimumHeight = 0,
+  preserveOrder = false,
 }) {
-  const ordered = orderAreaItemsForDrop(items, movingId, dropPoint);
-  const widest = Math.max(0, ...ordered.map((item) => item.rect.width));
-  const columns = ordered.length ? Math.min(4, Math.max(1, Math.ceil(Math.sqrt(ordered.length * 1.6)))) : 1;
-  const naturalWidth = CONTAINER_PADDING_X * 2 + columns * widest + Math.max(0, columns - 1) * AREA_ITEM_GAP;
-  const width = Math.max(520, naturalWidth, Number(minimumWidth || 0));
-  const left = areaRect.x + CONTAINER_PADDING_X;
-  let y = areaRect.y + headerHeight + CONTAINER_PADDING_Y;
-  const placements = [];
-  for (let index = 0; index < ordered.length; index += columns) {
-    const row = ordered.slice(index, index + columns);
-    const rowHeight = Math.max(0, ...row.map((item) => item.rect.height));
-    for (let column = 0; column < row.length; column += 1) {
-      const item = row[column];
-      const x = left + column * (widest + AREA_ITEM_GAP);
-      placements.push({ id: item.id, x, y, width: item.rect.width, height: item.rect.height });
+  const ordered = preserveOrder ? items : orderAreaItemsForDrop(items, movingId, dropPoint);
+  // Try a few actual row layouts. Variable-width columns avoid reserving
+  // the widest group's width for every small card beside it.
+  const candidates=[];
+  for(let columns=1;columns<=Math.min(4,Math.max(1,ordered.length));columns++){
+    let y=areaRect.y+headerHeight+CONTAINER_PADDING_Y;const placements=[];let width=520;
+    for(let index=0;index<ordered.length;index+=columns){const row=ordered.slice(index,index+columns);width=Math.max(width,row.reduce((sum,item)=>sum+item.rect.width,0)+(row.length-1)*AREA_ITEM_GAP+CONTAINER_PADDING_X*2);}
+    for(let index=0;index<ordered.length;index+=columns){
+      const row=ordered.slice(index,index+columns),reverse=false;
+      let x=areaRect.x+(reverse?width-CONTAINER_PADDING_X:CONTAINER_PADDING_X);
+      for(const item of row){if(reverse)x-=item.rect.width;placements.push({id:item.id,x,y,width:item.rect.width,height:item.rect.height});x+=reverse?-AREA_ITEM_GAP:item.rect.width+AREA_ITEM_GAP;}
+      y+=Math.max(0,...row.map(item=>item.rect.height))+AREA_ITEM_GAP;
     }
-    y += rowHeight + AREA_ITEM_GAP;
+    const height=Math.max(260,y-areaRect.y-AREA_ITEM_GAP+CONTAINER_PADDING_Y);
+    // Prefer compact, roughly square containers without wasting whole columns.
+    const score=width*height*(1+Math.abs(Math.log(width/height/2.2))*.8);
+    candidates.push({placements,width:Math.max(width,Number(minimumWidth||0)),y,score});
   }
+  candidates.sort((a,b)=>a.score-b.score);
+  const {placements,width,y}=candidates[0];
   const contentBottom = placements.length ? y - AREA_ITEM_GAP : areaRect.y + headerHeight;
   return {
     placements,
@@ -223,9 +235,11 @@ function entityDepth(entityId, byEntity) {
 }
 
 export function compactContainerMembership(snapshot, nodes, context, nextParentId, initialTranslation, dropCenterY) {
+  const affected = context.affected || new Set(context.positions.keys());
+  const nextAreaId = snapshot.entities.find(entity => entity.id === nextParentId)?.areaId ?? context.originalAreaId;
   const draft = {
     ...snapshot,
-    entities: snapshot.entities.map((entity) => entity.id === context.entityId ? { ...entity, parentId: nextParentId } : entity),
+    entities: snapshot.entities.map((entity) => affected.has(`entity:${entity.id}`) ? { ...entity, areaId: nextAreaId, ...(entity.id === context.entityId ? {parentId:nextParentId} : {}) } : entity),
   };
   const hierarchy = graphHierarchy(draft);
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -250,7 +264,6 @@ export function compactContainerMembership(snapshot, nodes, context, nextParentI
       current = current.parentId ? byEntity.get(current.parentId) : null;
     }
   };
-  if (context.originalParentId) addParentChain(context.originalParentId);
   if (nextParentId) addParentChain(nextParentId);
 
   const orderedParents = [...parentIds].sort(
@@ -303,8 +316,37 @@ export function compactContainerMembership(snapshot, nodes, context, nextParentI
   return {
     hierarchy,
     parentIds: [...parentIds],
+    movedEntityIds: [...affected].filter(id => id.startsWith("entity:")).map(id => id.slice(7)),
     moves: [...touched].map((id) => ({ id, ...positions.get(id) })),
   };
+}
+
+export function growDropAreas(snapshot, nodes, moves, movedEntityIds, nextAreaId) {
+  const output = new Map(moves.map(move => [move.id, move]));
+  const membership = new Set(movedEntityIds);
+  const entities = snapshot.entities.map(entity => membership.has(entity.id) ? {...entity,areaId:nextAreaId} : entity);
+  const areaRects = new Map(nodes.filter(node => node.type === "area").map(node => [node.data.area.id,{...nodeRect(node),...output.get(node.id)}]));
+  for (const entity of entities) {
+    if (entity.kind === "person" || entity.areaId !== nextAreaId) continue;
+    const node = nodes.find(item => item.id === `entity:${entity.id}`), area = areaRects.get(entity.areaId);
+    if (!node || !area) continue;
+    const rect = {...nodeRect(node),...output.get(node.id)};
+    area.width = Math.max(area.width, rect.x + rect.width + CONTAINER_PADDING_X - area.x);
+    area.height = Math.max(area.height, rect.y + rect.height + CONTAINER_PADDING_Y - area.y);
+  }
+  const displaced = displaceOverlappingAreas(areaRects,nextAreaId);
+  for (const [id, after] of displaced.rects) {
+    const before = areaRects.get(id), node = nodes.find(item => item.id === `area:${id}`);
+    const dx=after.x-before.x,dy=after.y-before.y;
+    if (dx || dy) for (const entity of entities.filter(item => item.areaId === id && item.kind !== "person")) {
+      const member = nodes.find(item => item.id === `entity:${entity.id}`); if (!member) continue;
+      const position=output.get(member.id)||member.position;
+      output.set(member.id,{id:member.id,x:position.x+dx,y:position.y+dy});
+    }
+    const original=nodeRect(node);
+    if (["x","y","width","height"].some(key => after[key] !== original[key])) output.set(node.id,{id:node.id,...after});
+  }
+  return [...output.values()];
 }
 
 export function compactAreaMembership(snapshot, nodes, context, nextAreaId, initialTranslation, dropPoint) {
@@ -333,7 +375,7 @@ export function compactAreaMembership(snapshot, nodes, context, nextAreaId, init
   };
   const areaRects = new Map(nodes.filter((node) => node.type === "area").map((node) => [node.data.area.id, nodeRect(node)]));
   const areaItems = new Map();
-  const affectedAreas = [...new Set([context.originalAreaId, nextAreaId].filter(Boolean))];
+  const affectedAreas = nextAreaId ? [nextAreaId] : [];
   for (const areaId of affectedAreas) {
     const areaRect = areaRects.get(areaId); if (!areaRect) continue;
     const roots = draft.entities.filter((entity) => entity.kind !== "person" && entity.areaId === areaId && (!entity.parentId || byEntity.get(entity.parentId)?.areaId !== areaId));
@@ -344,8 +386,8 @@ export function compactAreaMembership(snapshot, nodes, context, nextAreaId, init
       items,
       movingId: areaId === nextAreaId ? context.entityId : "",
       dropPoint: areaId === nextAreaId ? dropPoint : null,
-      minimumWidth: area?.minWidth,
-      minimumHeight: area?.minHeight,
+      minimumWidth: Math.max(areaRect.width,area?.minWidth||0),
+      minimumHeight: Math.max(areaRect.height,area?.minHeight||0),
     });
     const itemById = new Map(items.map((item) => [item.id, item]));
     for (const placement of packed.placements) {

@@ -119,7 +119,7 @@ export function validateEvent(event) {
     optionalString(errors, payload.color, "payload.color", 32);
     optionalStringList(errors, payload.evidence, "payload.evidence");
     for (const field of ["x", "y", "width", "height", "minWidth", "minHeight", "order"]) {
-      if (payload[field] !== undefined) requireFiniteNumber(errors, payload[field], `payload.${field}`);
+      if (payload[field] !== undefined && !(payload.x===null&&payload.y===null&&["x","y"].includes(field))) requireFiniteNumber(errors, payload[field], `payload.${field}`);
     }
   } else if (event.type === "area.remove") {
     requireString(errors, payload.id, "payload.id", { max: 128, id: true });
@@ -131,7 +131,7 @@ export function validateEvent(event) {
       if (payload.areaId) errors.push("payload.areaId must be empty for a person");
       if (payload.parentId) errors.push("payload.parentId must be empty for a person");
       if (payload.path) errors.push("payload.path must be empty for a person");
-    } else requireString(errors, payload.areaId, "payload.areaId", { max: 128, id: true });
+    } else if (payload.areaId !== "") requireString(errors, payload.areaId, "payload.areaId", { max: 128, id: true });
     requireString(errors, payload.label, "payload.label", { max: 240 });
     requireStatus(errors, payload.status, "payload.status", ENTITY_STATUSES);
     optionalString(errors, payload.path, "payload.path", 1000);
@@ -145,7 +145,7 @@ export function validateEvent(event) {
     optionalStringList(errors, payload.inputs, "payload.inputs");
     optionalStringList(errors, payload.outputs, "payload.outputs");
     optionalStringList(errors, payload.dependsOn, "payload.dependsOn");
-    for (const field of ["x", "y", "order"]) if (payload[field] !== undefined) requireFiniteNumber(errors, payload[field], `payload.${field}`);
+    for (const field of ["x", "y", "order"]) if (payload[field] !== undefined && !(payload.x===null&&payload.y===null&&["x","y"].includes(field))) requireFiniteNumber(errors, payload[field], `payload.${field}`);
   } else if (event.type === "entity.remove") {
     requireString(errors, payload.id, "payload.id", { max: 128, id: true });
     optionalString(errors, payload.reason, "payload.reason", 2000);
@@ -178,16 +178,18 @@ export function validateEvent(event) {
   return errors;
 }
 
-export function validateEventSequence(eventsWithLines) {
+export function validateEventSequence(eventsWithLines, base = null, knownIds = null, {final=true} = {}) {
   const errors = [];
   const eventIds = new Set();
-  const areas = new Set();
-  const entities = new Set();
-  const entityAreas = new Map();
-  const entityKinds = new Map();
+  const areas = new Set((base?.areas||[]).map(item=>item.id));
+  const entities = new Set((base?.entities||[]).map(item=>item.id));
+  const entityAreas = new Map((base?.entities||[]).map(item=>[item.id,item.areaId]));
+  const entityKinds = new Map((base?.entities||[]).map(item=>[item.id,item.kind]));
+  const parents = new Map((base?.entities||[]).map(item=>[item.id,item.parentId]));
+  const locations = new Map();
 
   for (const { event, line } of eventsWithLines) {
-    if (eventIds.has(event.id)) errors.push({ line, id: event.id, message: "duplicate event id" });
+    if (eventIds.has(event.id) || knownIds?.has(event.id)) errors.push({ line, id: event.id, message: "duplicate event id" });
     eventIds.add(event.id);
     if (event.type === "area.upsert") areas.add(event.payload.id);
     if (event.type === "area.remove") {
@@ -197,22 +199,26 @@ export function validateEventSequence(eventsWithLines) {
           entities.delete(entityId);
           entityAreas.delete(entityId);
           entityKinds.delete(entityId);
+          parents.delete(entityId);
         }
       }
     }
     if (event.type === "entity.upsert") {
       entities.add(event.payload.id);
       entityAreas.set(event.payload.id, event.payload.areaId);
-      entityKinds.set(event.payload.id, event.payload.kind || "component");
+      entityKinds.set(event.payload.id, event.payload.kind || entityKinds.get(event.payload.id) || "component");
+      if(Object.hasOwn(event.payload,"parentId")) parents.set(event.payload.id,event.payload.parentId);
+      locations.set(event.payload.id,{line,id:event.id});
       if (event.payload.kind === "person") {
         if (event.payload.areaId) errors.push({ line, id: event.id, message: "person must stay outside project areas" });
-      } else if (!areas.has(event.payload.areaId)) errors.push({ line, id: event.id, message: `entity area '${event.payload.areaId}' does not exist` });
+      } else if (event.payload.areaId && !areas.has(event.payload.areaId)) errors.push({ line, id: event.id, message: `entity area '${event.payload.areaId}' does not exist` });
       if (event.payload.parentId && !entities.has(event.payload.parentId)) errors.push({ line, id: event.id, message: `entity parent '${event.payload.parentId}' does not exist` });
     }
     if (event.type === "entity.remove") {
       entities.delete(event.payload.id);
       entityAreas.delete(event.payload.id);
       entityKinds.delete(event.payload.id);
+      parents.delete(event.payload.id);
     }
     if (event.type === "relation.upsert") {
       if (!entities.has(event.payload.from)) errors.push({ line, id: event.id, message: `relation source '${event.payload.from}' does not exist` });
@@ -224,6 +230,14 @@ export function validateEventSequence(eventsWithLines) {
         else if (entityKinds.get(target) === "person") errors.push({ line, id: event.id, message: `work cannot target person '${target}'` });
       }
     }
+  }
+  if(final) for(const entityId of entities) {
+    const parent=parents.get(entityId);if(!parent)continue;
+    const location=locations.get(entityId)||{line:0,id:entityId};
+    if(!entities.has(parent)) errors.push({...location,message:`entity parent '${parent}' does not exist`});
+    else if(entityAreas.get(parent)!==entityAreas.get(entityId)) errors.push({...location,message:"entity parent belongs to another area"});
+    const visited=new Set([entityId]);let ancestor=parent;
+    while(ancestor) {if(visited.has(ancestor)){errors.push({...location,message:"entity parent hierarchy contains a cycle"});break;}visited.add(ancestor);ancestor=parents.get(ancestor);}
   }
   return errors;
 }

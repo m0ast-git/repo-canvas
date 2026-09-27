@@ -1,10 +1,16 @@
+import {mergeReciprocalRoutes} from "./reciprocal-routes.js";
 import ELK from "elkjs/lib/elk-api.js";
 import elkWorkerUrl from "elkjs/lib/elk-worker.min.js?url";
 import { createRoutingSession, init as initLibavoid, routeEdges as routeLibavoidEdges } from "@mr_mint/elkjs-libavoid";
-import { AREA_HEADER_HEIGHT, normalizeStoredEntityPositions } from "./container-layout.js";
+import { LAYOUT_VERSION, AREA_HEADER_HEIGHT, packAreaGrid, normalizeStoredEntityPositions, displaceOverlappingAreas, restoredLayoutPosition } from "./container-layout.js";
 import { ENTITY_BASE_HEIGHT, ENTITY_MIN_WIDTH, entityCardSize, groupHeaderSize } from "./node-geometry.js";
-import { RoutingRegistry } from "./routing-registry.js";
-import { createRoutingScope, routesFromRoutingResults } from "./routing-scopes.js";
+import { ROUTING_VERSION, RoutingRegistry } from "./routing-registry.js";
+import { layoutFingerprint } from "./layout-fingerprint.js";
+
+
+import { graphHierarchy } from './graph-contract.js';
+import { isContainmentRoute } from './route-scene.js';
+import { INTERACTIVE_ROUTING_OPTIONS, presentationRoutingScope, presentationRoutesFromResults } from './presentation-routing.js';
 
 const elk = new ELK({ workerUrl: elkWorkerUrl });
 const libavoidWasmUrl = new URL("../../node_modules/libavoid-js/dist/libavoid.wasm", import.meta.url).href;
@@ -14,25 +20,9 @@ const ENTITY_W = ENTITY_MIN_WIDTH;
 const ENTITY_H = ENTITY_BASE_HEIGHT;
 const PERSON_W = 176;
 const PERSON_H = 164;
-const WORK_W = 196;
-const WORK_H = 66;
+const WORK_W = 240;
+const WORK_H = 88;
 const CLEARANCE = 24;
-const LIBAVOID_OPTIONS = Object.freeze({
-  routingType: "orthogonal",
-  segmentPenalty: 20,
-  crossingPenalty: 70,
-  fixedSharedPathPenalty: 50,
-  reverseDirectionPenalty: 24,
-  portDirectionPenalty: 100,
-  shapeBufferDistance: 20,
-  idealNudgingDistance: 18,
-  nudgeOrthogonalSegmentsConnectedToShapes: true,
-  nudgeOrthogonalTouchingColinearSegments: true,
-  performUnifyingNudgingPreprocessingStep: false,
-  nudgeSharedPathsWithCommonEndPoint: true,
-  selfLoopHandling: "fallback",
-});
-
 const palette = ["#e88962", "#5fae93", "#d49a43", "#8d79b8", "#cf6f76", "#5d97b3", "#ae865d", "#6fa36b", "#b7789f", "#7a91c4", "#c37d4a", "#53a0a0"];
 
 function stableColor(area, index) {
@@ -54,82 +44,33 @@ function entityTree(areaEntities) {
     if (!children.has(parentId)) children.set(parentId, []);
     children.get(parentId).push(entity);
   }
-  for (const items of children.values()) items.sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || String(a.label).localeCompare(String(b.label)));
+  for (const items of children.values()) items.sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || String(a.label).localeCompare(String(b.label),"ru",{numeric:true}));
   return children;
 }
 
-function elkEntity(entity, tree, direction, metrics) {
-  const nested = tree.get(entity.id) || [];
-  if (!nested.length) {
-    const card = entityCardSize(entity); metrics.set(entity.id, { ...card, group: false });
-    return { node: { id: entity.id, width: card.width, height: card.height }, widthHint: card.width };
+async function layoutArea(area, entities,relations=[],direction="RIGHT") {
+  const tree=entityTree(entities.filter(item=>item.kind!=="person"));
+  const geometry=new Map();
+  async function pack(items,headerHeight=AREA_HEADER_HEIGHT,minimumWidth=area.minWidth,minimumHeight=area.minHeight) {
+    const owner=new Map(items.flatMap(item=>item.ids.map(id=>[id,item.id])));
+    const edges=relations.filter(edge=>owner.has(edge.from)&&owner.has(edge.to)&&owner.get(edge.from)!==owner.get(edge.to)).map(edge=>({id:edge.id,sources:[owner.get(edge.from)],targets:[owner.get(edge.to)]}));
+    if(!edges.length)return packAreaGrid({areaRect:{x:0,y:0},items,headerHeight,minimumWidth,minimumHeight,preserveOrder:true});
+    const graph=await elk.layout({id:"flow-packing",layoutOptions:{"elk.algorithm":"layered","elk.direction":direction,"elk.edgeRouting":"ORTHOGONAL","elk.padding":`[top=${headerHeight},left=40,bottom=40,right=40]`,"elk.spacing.nodeNode":"60","elk.layered.spacing.nodeNodeBetweenLayers":"90","elk.layered.considerModelOrder.strategy":"NODES_AND_EDGES"},children:items.map(item=>({id:item.id,width:item.rect.width,height:item.rect.height})),edges});
+    return {width:Math.max(graph.width,minimumWidth||0),height:Math.max(graph.height,minimumHeight||0),placements:graph.children.map(item=>({id:item.id,x:item.x,y:item.y}))};
   }
-  const children = nested.map((child) => elkEntity(child, tree, direction, metrics));
-  const childrenWidth = Math.max(ENTITY_W, ...children.map((child) => child.widthHint));
-  const header = groupHeaderSize(entity, childrenWidth + 56);
-  const widthHint = Math.max(childrenWidth + 80, header.width + 26);
-  metrics.set(entity.id, { group: true, headerWidth: header.width, headerHeight: header.height, widthHint });
-  return {
-    widthHint,
-    node: {
-      id: entity.id,
-      children: children.map((child) => child.node),
-      layoutOptions: cleanOptions({
-      "elk.algorithm": "layered",
-      "elk.direction": direction,
-      "elk.edgeRouting": "ORTHOGONAL",
-      "elk.padding": `[top=${header.height + 45},left=40,bottom=42,right=40]`,
-      "elk.spacing.nodeNode": "76",
-      "elk.spacing.edgeNode": "46",
-      "elk.spacing.edgeEdge": "38",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "108",
-      "elk.layered.spacing.edgeNodeBetweenLayers": "52",
-      }),
-    },
-  };
-}
-
-function collectEntityGeometry(node, parentX, parentY, output, metrics, depth = 0) {
-  const x = parentX + Number(node.x || 0);
-  const y = parentY + Number(node.y || 0);
-  const metric = metrics.get(node.id) || {};
-  output.set(node.id, { x, y, width: Number(node.width || metric.width || ENTITY_W), height: Number(node.height || metric.height || ENTITY_H), depth, group: Boolean(node.children?.length), headerWidth: metric.headerWidth, headerHeight: metric.headerHeight });
-  for (const child of node.children || []) collectEntityGeometry(child, x, y, output, metrics, depth + 1);
-}
-
-async function layoutArea(area, entities, relations, direction) {
-  const tree = entityTree(entities);
-  const metrics = new Map();
-  const entityIds = new Set(entities.map((item) => item.id));
-  const graph = {
-    id: `area-layout:${area.id}`,
-    layoutOptions: cleanOptions({
-      "elk.algorithm": "layered",
-      "elk.hierarchyHandling": "INCLUDE_CHILDREN",
-      "elk.direction": direction,
-      "elk.edgeRouting": "ORTHOGONAL",
-      "elk.padding": `[top=${AREA_HEADER_HEIGHT},left=34,bottom=38,right=34]`,
-      "elk.spacing.nodeNode": "96",
-      "elk.spacing.edgeEdge": "44",
-      "elk.spacing.edgeNode": "56",
-      "elk.spacing.edgeLabel": "28",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "148",
-      "elk.layered.spacing.edgeEdgeBetweenLayers": "48",
-      "elk.layered.spacing.edgeNodeBetweenLayers": "64",
-      "elk.layered.mergeEdges": "false",
-      "elk.layered.nodePlacement.favorStraightEdges": "true",
-    }),
-    children: (tree.get("") || []).map((entity) => elkEntity(entity, tree, direction, metrics).node),
-    edges: relations.filter((relation) => entityIds.has(relation.from) && entityIds.has(relation.to)).map((relation) => ({
-      id: relation.id, sources: [relation.from], targets: [relation.to],
-      labels: relation.label ? [{ text: relation.label, width: Math.min(220, Math.max(72, relation.label.length * 7 + 28)), height: 28 }] : [],
-    })),
-  };
-  if (!graph.children.length) return { width: 520, height: 260, entities: new Map() };
-  const result = await elk.layout(graph);
-  const geometry = new Map();
-  for (const child of result.children || []) collectEntityGeometry(child, 0, 0, geometry, metrics);
-  return { width: Math.max(520, Number(result.width || 520)), height: Math.max(260, Number(result.height || 260)), entities: geometry };
+  async function build(item,depth=0){
+    const children=await Promise.all((tree.get(item.id)||[]).map(child=>build(child,depth+1)));
+    if(!children.length){const rect={...entityCardSize(item),x:0,y:0,depth,group:false};geometry.set(item.id,rect);return {id:item.id,rect,ids:[item.id]};}
+    const header=groupHeaderSize(item,400);
+    const packed=await pack(children,header.height+12,header.width+80);
+    for(const placed of packed.placements){const child=children.find(item=>item.id===placed.id);for(const id of child.ids){const rect=geometry.get(id);rect.x+=placed.x;rect.y+=placed.y;}}
+    const rect={x:0,y:0,width:packed.width,height:packed.height,headerWidth:header.width,headerHeight:header.height,group:true,depth};geometry.set(item.id,rect);
+    return {id:item.id,rect,ids:[item.id,...children.flatMap(child=>child.ids)]};
+  }
+  const roots=await Promise.all((tree.get("")||[]).map(item=>build(item)));
+  const packed=await pack(roots);
+  for(const placed of packed.placements){const root=roots.find(item=>item.id===placed.id);for(const id of root.ids){const rect=geometry.get(id);rect.x+=placed.x;rect.y+=placed.y;}}
+  return {width:packed.width,height:packed.height,entities:geometry};
 }
 
 function rootAlgorithm(intent) {
@@ -155,11 +96,11 @@ async function layoutAreas(snapshot, areaLayouts, direction) {
       "elk.algorithm": algorithm,
       "elk.direction": algorithm === "layered" ? direction : undefined,
       "elk.edgeRouting": "ORTHOGONAL",
-      "elk.spacing.nodeNode": "160",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "210",
-      "elk.spacing.componentComponent": "160",
-      "elk.aspectRatio": "1.45",
-      "elk.padding": "[top=90,left=90,bottom=90,right=90]",
+      "elk.spacing.nodeNode": "96",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "112",
+      "elk.spacing.componentComponent": "96",
+      "elk.aspectRatio": "2.2",
+      "elk.padding": "[top=32,left=32,bottom=32,right=32]",
     }),
     children: snapshot.areas.map((area) => ({
       id: area.id,
@@ -195,7 +136,7 @@ function placePeople(snapshot, areaRects, entityRects) {
     const distances = [
       ["left", Math.abs(anchor.x - bounds.left)], ["right", Math.abs(bounds.right - anchor.x)],
       ["top", Math.abs(anchor.y - bounds.top)], ["bottom", Math.abs(bounds.bottom - anchor.y)],
-    ].sort((a, b) => a[1] - b[1]);
+    ].filter(([side])=>side==="left"||side==="right").sort((a, b) => a[1] - b[1]);
     lanes.get(distances[0][0]).push({ person, anchor });
   }
   const result = new Map(); const gap = 34; const margin = 96;
@@ -238,7 +179,7 @@ function workPositions(snapshot, entityRects, areaRects) {
   const positions = new Map(); const placed = [];
   const obstacles = [
     ...entityRects.values(),
-    ...areaRects.values().map((rect) => ({ x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_HEIGHT - 20 })),
+    ...areaRects.values().map((rect) => ({ x: rect.x + 18, y: rect.y + 14, width: Math.max(0, rect.width - 36), height: AREA_HEADER_HEIGHT - 20 })),
   ];
   for (const work of (snapshot.work || []).filter((item) => ["active", "blocked", "planned"].includes(item.status))) {
     const manual = Number.isFinite(Number(work.x)) && Number.isFinite(Number(work.y)) ? { x: Number(work.x), y: Number(work.y) } : null;
@@ -292,28 +233,16 @@ function simplify(points) {
   });
 }
 
-function localFallback(edge, boxes) {
+function previewRoute(edge, boxes) {
   const source = boxes.get(edge.source); const target = boxes.get(edge.target); if (!source || !target) return null;
   const routeBase = { sourceBase: { x: source.x, y: source.y }, targetBase: { x: target.x, y: target.y } };
   const a = center(source); const b = center(target); const horizontal = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
   if (horizontal) {
     const direction = b.x >= a.x ? 1 : -1; const start = { x: direction > 0 ? source.x + source.width : source.x, y: a.y }; const end = { x: direction > 0 ? target.x : target.x + target.width, y: b.y }; const midX = (start.x + end.x) / 2;
-    return { ...edge, ...routeBase, points: simplify([start, { x: midX, y: start.y }, { x: midX, y: end.y }, end]), fallback: true };
+    return { ...edge, ...routeBase, points: simplify([start, { x: midX, y: start.y }, { x: midX, y: end.y }, end]), preview: true };
   }
   const direction = b.y >= a.y ? 1 : -1; const start = { x: a.x, y: direction > 0 ? source.y + source.height : source.y }; const end = { x: b.x, y: direction > 0 ? target.y : target.y + target.height }; const midY = (start.y + end.y) / 2;
-  return { ...edge, ...routeBase, points: simplify([start, { x: start.x, y: midY }, { x: end.x, y: midY }, end]), fallback: true };
-}
-
-async function routeScopeOnce(scope) {
-  let routed = new Map();
-  try {
-    await ensureLibavoid();
-    routed = await routeLibavoidEdges(scope.graph, LIBAVOID_OPTIONS);
-  } catch (error) {
-    console.warn(`Repo Canvas libavoid fallback: ${error?.message || error}`);
-  }
-  const fromLibavoid = new Map(routesFromRoutingResults(scope, routed).map((route) => [route.id, { ...route, points: simplify(route.points) }]));
-  return scope.edges.map((edge) => fromLibavoid.get(edge.id) || localFallback(edge, scope.nodes)).filter(Boolean);
+  return { ...edge, ...routeBase, points: simplify([start, { x: start.x, y: midY }, { x: end.x, y: midY }, end]), preview: true };
 }
 
 function fitAreasToContents(snapshot, areas, entities) {
@@ -333,51 +262,41 @@ function fitAreasToContents(snapshot, areas, entities) {
     const contentHeight = Math.max(260, bottom - rect.y);
     rect.contentWidth = contentWidth;
     rect.contentHeight = contentHeight;
-    rect.width = Math.max(contentWidth, Number(area.minWidth || 0));
-    rect.height = Math.max(contentHeight, Number(area.minHeight || 0));
+    rect.width = Math.max(rect.width,contentWidth, Number(area.minWidth || 0));
+    rect.height = Math.max(rect.height,contentHeight, Number(area.minHeight || 0));
   }
 }
 
-function createRegistry() {
-  return new RoutingRegistry({
-    createSession: async (graph) => {
-      await ensureLibavoid();
-      return createRoutingSession(graph, LIBAVOID_OPTIONS);
-    },
-    routeOnce: routeScopeOnce,
-    onError: (error) => console.warn(`Repo Canvas incremental routing fallback: ${error?.message || error}`),
-  });
+const finalRouting = new RoutingRegistry({
+  createSession:async graph=>{await ensureLibavoid();return createRoutingSession(graph,INTERACTIVE_ROUTING_OPTIONS);},
+  routeOnce:async scope=>{await ensureLibavoid();return presentationRoutesFromResults(scope,await routeLibavoidEdges(scope.graph,INTERACTIVE_ROUTING_OPTIONS));},
+  convertResults:presentationRoutesFromResults,
+  onError:error=>console.warn('Final routing:',error),
+});
+async function routePresentation(message) {
+  if(!message.routes.length){await finalRouting.replace([]);return [];}
+  const scope=presentationRoutingScope(message.routes,message.scene);
+  const previous=finalRouting.entries.get(scope.id);
+  if(!previous||previous.scope.structure!==scope.structure)return finalRouting.replace([scope]);
+  previous.scope.logicalRoutes=scope.logicalRoutes;previous.scope.scene=scope.scene;
+  const moves=[...scope.nodes.values()].filter(node=>{const old=previous.scope.nodes.get(node.id);return !old||Math.abs(old.x-node.x)>.01||Math.abs(old.y-node.y)>.01;}).map(node=>({id:node.id,x:node.x,y:node.y}));
+  await finalRouting.settle(moves);
+  return finalRouting.routes();
 }
 
-const areaRouting = createRegistry();
-const detailRouting = createRegistry();
-
 function aggregateRelations(snapshot) {
+  const descendants=graphHierarchy(snapshot).descendants;
   const areaByEntity = new Map(snapshot.entities.map((entity) => [entity.id, entity.areaId])); const grouped = new Map();
   for (const relation of snapshot.relations || []) {
     const source = `entity:${relation.from}`; const target = `entity:${relation.to}`;
+    if(isContainmentRoute({source,target},descendants))continue;
     if (!source || !target || source.endsWith("undefined") || target.endsWith("undefined") || source === target) continue;
-    const key = `${source}->${target}:${relation.status || "existing"}`;
-    const current = grouped.get(key) || { id: `relation:${key}`, source, target, status: relation.status || "existing", relations: [], priority: relation.status === "planned" ? 1 : 0 };
+    const channelId=relation.channelId||relation.channel||"",sourcePort=relation.sourcePort||relation.fromPort||"",targetPort=relation.targetPort||relation.toPort||"";
+    const key = `${source}->${target}:${relation.status || "existing"}:${JSON.stringify([channelId,sourcePort,targetPort])}`;
+    const current = grouped.get(key) || { id: `relation:${key}`, source, target, channelId, sourcePort, targetPort, status: relation.status || "existing", relations: [], priority: relation.status === "planned" ? 1 : 0 };
     current.relations.push(relation); grouped.set(key, current);
   }
-  return [...grouped.values()].map((edge) => ({ ...edge, type: "relation", label: edge.relations.length === 1 ? (edge.relations[0].ownerLabel || edge.relations[0].label || "") : `${edge.relations.length} связей`, relationId: edge.relations.length === 1 ? edge.relations[0].id : "", sourceAreaId: areaByEntity.get(edge.relations[0].from), targetAreaId: areaByEntity.get(edge.relations[0].to) }));
-}
-
-function aggregateAreaRelations(snapshot) {
-  const areaByEntity = new Map(snapshot.entities.map((entity) => [entity.id, entity.areaId])); const kindByEntity = new Map(snapshot.entities.map((entity) => [entity.id, entity.kind])); const grouped = new Map();
-  for (const relation of snapshot.relations || []) {
-    const sourceAreaId = areaByEntity.get(relation.from); const targetAreaId = areaByEntity.get(relation.to);
-    const sourcePerson = kindByEntity.get(relation.from) === "person"; const targetPerson = kindByEntity.get(relation.to) === "person";
-    if (sourcePerson === targetPerson && (!sourceAreaId || !targetAreaId || sourceAreaId === targetAreaId)) continue;
-    const source = sourcePerson ? `entity:${relation.from}` : `area:${sourceAreaId}`;
-    const target = targetPerson ? `entity:${relation.to}` : `area:${targetAreaId}`;
-    if (source.endsWith("undefined") || target.endsWith("undefined") || source === target) continue;
-    const key = `${source}->${target}:${relation.status || "existing"}`;
-    const current = grouped.get(key) || { id: `area-relation:${key}`, source, target, sourceAreaId: sourceAreaId || targetAreaId, targetAreaId: targetAreaId || sourceAreaId, status: relation.status || "existing", relations: [], priority: relation.status === "planned" ? 1 : 0 };
-    current.relations.push(relation); grouped.set(key, current);
-  }
-  return [...grouped.values()].map((edge) => ({ ...edge, type: "area-relation", label: edge.relations.length === 1 ? (edge.relations[0].ownerLabel || edge.relations[0].label || "связь областей") : `${edge.relations.length} связей между областями`, relationId: edge.relations.length === 1 ? edge.relations[0].id : "" }));
+  return mergeReciprocalRoutes([...grouped.values()]).map((edge) => ({ ...edge, type: "relation", label: edge.sharedLabel || (edge.bidirectional ? "Обмен данными" : "") || (edge.relations.length === 1 ? (edge.relations[0].ownerLabel || edge.relations[0].label || "") : `${edge.relations.length} связей`), relationId: edge.relations.length === 1 ? edge.relations[0].id : "", sourceAreaId: areaByEntity.get(edge.relations[0].from), targetAreaId: areaByEntity.get(edge.relations[0].to) }));
 }
 
 function workEdges(snapshot, hierarchy) {
@@ -392,150 +311,118 @@ function workEdges(snapshot, hierarchy) {
   return output;
 }
 
-function detailedRoutingScopes(snapshot, geometry, hierarchy, colors) {
-  const boxes = new Map(); const obstacles = []; const boxesByArea = new Map(); const obstaclesByArea = new Map();
-  const ensureArea = (areaId) => { if (!boxesByArea.has(areaId)) boxesByArea.set(areaId, new Map()); if (!obstaclesByArea.has(areaId)) obstaclesByArea.set(areaId, []); };
-  for (const area of snapshot.areas) {
-    const rect = geometry.areas.get(area.id); if (!rect) continue;
-    ensureArea(area.id);
-    const header = { x: rect.x + 18, y: rect.y + 14, width: Math.min(560, rect.width - 36), height: AREA_HEADER_HEIGHT - 20, id: `area-header:${area.id}`, moveWith: `area:${area.id}`, moveOffsetX: 18, moveOffsetY: 14 };
-    obstacles.push(header); obstaclesByArea.get(area.id).push(header);
-  }
-  for (const [id, rect] of geometry.entities) {
-    const areaId = hierarchy.byId.get(id)?.areaId || ""; ensureArea(areaId);
-    const obstacle = rect.group ? { x: rect.x, y: rect.y, width: rect.width, height: rect.headerHeight || 76, id: `entity:${id}` } : { ...rect, id: `entity:${id}` };
-    boxes.set(`entity:${id}`, obstacle); obstacles.push(obstacle); boxesByArea.get(areaId).set(`entity:${id}`, obstacle); obstaclesByArea.get(areaId).push(obstacle);
-  }
-  for (const [id, rect] of geometry.work) {
-    const obstacle = { ...rect, id: `work:${id}` };
-    boxes.set(`work:${id}`, rect); obstacles.push(obstacle);
-  }
-  const workColors = { active: "#f09a52", blocked: "#ed716a", planned: "#e1b45d" };
-  const edges = [...aggregateRelations(snapshot), ...workEdges(snapshot, hierarchy)]
-    .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))
-    .map((edge) => ({ ...edge, color: edge.type === "work" ? workColors[edge.status] || workColors.active : colors.get(edge.sourceAreaId) || colors.get(edge.targetAreaId) || "#b88f72" }));
-  const local = new Map(); const cross = [];
-  for (const edge of edges) { if (edge.sourceAreaId && edge.sourceAreaId === edge.targetAreaId) { if (!local.has(edge.sourceAreaId)) local.set(edge.sourceAreaId, []); local.get(edge.sourceAreaId).push(edge); } else cross.push(edge); }
-  const scopes = [];
-  for (const [areaId, areaEdges] of local) scopes.push(createRoutingScope({ id: `detail:area:${areaId}`, edges: areaEdges, boxes: boxesByArea.get(areaId) || new Map(), obstacles: obstaclesByArea.get(areaId) || [] }));
-  if (cross.length) scopes.push(createRoutingScope({ id: "detail:cross", edges: cross, boxes, obstacles }));
-  return scopes;
+function logicalRoutes(snapshot,geometry,hierarchy) {
+  const boxes=new Map([...geometry.entities].map(([id,rect])=>['entity:'+id,rect]).concat([...geometry.work].map(([id,rect])=>['work:'+id,rect])));
+  return [...aggregateRelations(snapshot),...workEdges(snapshot,hierarchy)]
+    .sort((a,b)=>a.priority-b.priority||a.id.localeCompare(b.id))
+    .map(edge=>previewRoute(edge,boxes)).filter(Boolean);
 }
 
-function areaRoutingScopes(snapshot, geometry, colors) {
-  const boxes = new Map(); const obstacles = [];
-  for (const [id, rect] of geometry.areas) { boxes.set(`area:${id}`, rect); obstacles.push({ ...rect, id: `area:${id}` }); }
-  for (const entity of snapshot.entities.filter((item) => item.kind === "person")) {
-    const rect = geometry.entities.get(entity.id); if (!rect) continue;
-    boxes.set(`entity:${entity.id}`, rect); obstacles.push({ ...rect, id: `entity:${entity.id}` });
-  }
-  const edges = aggregateAreaRelations(snapshot).sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))
-    .map((edge) => ({ ...edge, color: colors.get(edge.sourceAreaId) || colors.get(edge.targetAreaId) || "#b88f72" }));
-  return [createRoutingScope({ id: "area:overview", edges, boxes, obstacles })];
-}
-
-function mergeRoutes(current, updates) { const merged = new Map((current || []).map((route) => [route.id, route])); for (const route of updates || []) merged.set(route.id, route); return [...merged.values()]; }
-
-let liveContext = null;
-
-async function routeLiveMoves(message, emitPriority) {
-  if (!liveContext || liveContext.revision !== message.revision || !Array.isArray(message.moves) || !message.moves.length) return null;
-  const geometry = { ...liveContext.geometry, areas: new Map(liveContext.geometry.areas), entities: new Map(liveContext.geometry.entities), work: new Map(liveContext.geometry.work) };
-  const movedNodeIds = new Set();
-  for (const move of message.moves) {
-    const nodeId = String(move.id || ""); const [kind, ...rest] = nodeId.split(":"); const id = rest.join(":"); const collection = kind === "area" ? geometry.areas : kind === "entity" ? geometry.entities : kind === "work" ? geometry.work : null; const current = collection?.get(id);
-    if (!current || !Number.isFinite(move.x) || !Number.isFinite(move.y)) continue;
-    collection.set(id, { ...current, x: move.x, y: move.y }); movedNodeIds.add(nodeId);
-  }
-  if (!movedNodeIds.size) return null;
-  liveContext.geometry = geometry;
-  // Every graph item uses the same drag lifecycle. The main thread draws one
-  // cheap orthogonal preview while the pointer is moving; Libavoid runs once
-  // for the settled geometry instead of racing the cursor with stale routes.
-  if (!message.settle) return null;
-  // Reparenting changes container dimensions and routing-scope membership.
-  // The installed session API cannot resize obstacles, so keep the preview
-  // until the updated snapshot triggers a clean topology rebuild.
-  if (message.structural) return null;
-  // At overview zoom these are the visible relations, so publish their one
-  // incremental transaction before updating hidden entity-level scopes.
-  const areaRoutes = await areaRouting.settle(message.moves);
-  if (areaRoutes.length) {
-    liveContext.areaRoutes = mergeRoutes(liveContext.areaRoutes, areaRoutes);
-    emitPriority?.({ routes: [], areaRoutes });
-  }
-  const routes = await detailRouting.settle(message.moves);
-  liveContext.routes = mergeRoutes(liveContext.routes, routes);
-  return { routes, areaRoutes: [] };
-}
-
-async function calculate(snapshot, revision, emitPartial) {
+async function calculate(snapshot) {
   const requestedDirection = snapshot.map?.layoutDirection;
   const direction = requestedDirection === "DOWN" ? "DOWN" : "RIGHT";
   const colors = new Map(snapshot.areas.map((area, index) => [area.id, stableColor(area, index)]));
+  const stored=snapshot._geometry||snapshot._layoutSeed;
+  const structureKey=value=>{try{return JSON.stringify(JSON.parse(value).slice(0,4));}catch{return value;}};
+  const complete=stored && stored.routingVersion >= 3 && stored.layoutVersion === LAYOUT_VERSION && (!stored.fingerprint||structureKey(stored.fingerprint)===structureKey(layoutFingerprint(snapshot))) && stored.areas.length===snapshot.areas.length && stored.entities.length===snapshot.entities.length && snapshot.entities.every(item=>stored.entities.some(rect=>rect.id===item.id));
+  const sourcePositions = Object.fromEntries([...snapshot.areas,...snapshot.entities,...(snapshot.work || [])].map(item => [item.id,[item.x ?? null,item.y ?? null]]));
+  const reusePositions = stored?.layoutVersion === LAYOUT_VERSION;
   const areaLayouts = new Map();
+  let areas;let entities;
+  if(complete) {
+    areas=new Map(stored.areas.map(rect=>[rect.id,{...rect}]));
+    entities=new Map(stored.entities.map(rect=>[rect.id,{...rect}]));
+    for(const item of [...snapshot.areas,...snapshot.entities]){const rect=areas.get(item.id)||entities.get(item.id);if(rect && JSON.stringify(sourcePositions[item.id]) !== JSON.stringify(stored.sourcePositions?.[item.id]) && Number.isFinite(item.x)&&Number.isFinite(item.y)){rect.x=item.x;rect.y=item.y;}}
+  } else {
   for (const area of snapshot.areas) areaLayouts.set(area.id, await layoutArea(area, snapshot.entities.filter((entity) => entity.areaId === area.id), snapshot.relations || [], direction));
-  const areas = await layoutAreas(snapshot, areaLayouts, direction);
+  areas = await layoutAreas(snapshot, areaLayouts, direction);
   const entityById = new Map(snapshot.entities.map((entity) => [entity.id, entity]));
-  let entities = new Map();
+  entities = new Map();
   const defaultEntities = new Map();
   for (const area of snapshot.areas) {
     const areaRect = areas.get(area.id); const local = areaLayouts.get(area.id); if (!areaRect) continue;
-    if (Number.isFinite(Number(area.x)) && Number.isFinite(Number(area.y))) { areaRect.x = Number(area.x); areaRect.y = Number(area.y); }
+    const previousArea=stored?.areas?.find(item=>item.id===area.id);
+    const restoredArea=restoredLayoutPosition(area,reusePositions?previousArea:null,reusePositions?stored.sourcePositions?.[area.id]:null);
+    if(restoredArea)Object.assign(areaRect,restoredArea);
     areaRect.width = Math.max(areaRect.width, Number(area.minWidth || 0)); areaRect.height = Math.max(areaRect.height, Number(area.minHeight || 0));
     for (const [id, rect] of local.entities) {
       const absolute = { ...rect, x: areaRect.x + rect.x, y: areaRect.y + rect.y };
       defaultEntities.set(id, { ...absolute });
       const entity = entityById.get(id);
-      if (Number.isFinite(Number(entity?.x)) && Number.isFinite(Number(entity?.y))) { absolute.x = Number(entity.x); absolute.y = Number(entity.y); }
+      const previous=stored?.entities?.find(item=>item.id===id);
+      if(reusePositions&&previous&&!rect.group){absolute.width=previous.width;absolute.height=entityCardSize(entity,previous.width).height;}
+      const restored=restoredLayoutPosition(entity,reusePositions?previous:null,reusePositions?stored.sourcePositions?.[id]:null);
+      if(restored)Object.assign(absolute,restored);
       entities.set(id, absolute);
     }
   }
+  // Free nodes are first-class map objects and retain their saved coordinates.
+  const free=snapshot.entities.filter(entity=>!entity.areaId&&entity.kind!=='person');
+  if(free.length) {
+    const local=await layoutArea({id:'',title:''},free,snapshot.relations||[],direction);
+    const left=Math.max(0,...[...areas.values()].map(rect=>rect.x+rect.width))+120;
+    for(const [id,rect] of local.entities) {
+      const entity=entityById.get(id),previous=stored?.entities?.find(item=>item.id===id);
+      const restored=restoredLayoutPosition(entity,previous,stored?.sourcePositions?.[id]);
+      const absolute={...rect,x:restored?.x??left+rect.x,y:restored?.y??rect.y};
+      entities.set(id,absolute);defaultEntities.set(id,{...absolute});
+    }
+  }
   entities = normalizeStoredEntityPositions(snapshot, entities, defaultEntities, areas);
+  }
+  // Retain saved coordinates; only allow enough height for the new readable type.
+  for(const entity of snapshot.entities){const rect=entities.get(entity.id);if(rect&&!rect.group&&entity.kind!=="person")rect.height=Math.max(rect.height,entityCardSize(entity,rect.width).height);}
   fitAreasToContents(snapshot, areas, entities);
-  for (const [id, rect] of placePeople(snapshot, areas, entities)) entities.set(id, rect);
+  // A changed map must not inherit obsolete rectangles after normalization.
+  // Move each area with all its members so its internal layout stays intact.
+  for (const anchorId of areas.keys()) {
+    const separated = displaceOverlappingAreas(areas, anchorId).rects;
+    for (const [id, rect] of separated) {
+      const before = areas.get(id);
+      const dx = rect.x - before.x, dy = rect.y - before.y;
+      if (dx || dy) for (const entity of snapshot.entities) {
+        if (entity.areaId !== id || entity.kind === "person") continue;
+        const member = entities.get(entity.id);
+        if (member) { member.x += dx; member.y += dy; }
+      }
+    }
+    areas = separated;
+  }
+  if (!complete) for (const [id, rect] of placePeople(snapshot, areas, entities)) entities.set(id, rect);
   const hierarchy = ancestors(snapshot.entities);
   const work = workPositions(snapshot, entities, areas);
   const allRects = [...areas.values(), ...entities.values(), ...work.values()];
   const minX = Math.min(0, ...allRects.map((item) => item.x)); const minY = Math.min(0, ...allRects.map((item) => item.y)); const maxX = Math.max(1200, ...allRects.map((item) => item.x + item.width)); const maxY = Math.max(800, ...allRects.map((item) => item.y + item.height));
   const world = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   const geometry = { areas, entities, work, world };
-  const areaRoutes = await areaRouting.replace(areaRoutingScopes(snapshot, geometry, colors));
-  const base = {
-    areas: [...areas].map(([id, rect]) => ({ id, ...rect, color: colors.get(id) })),
-    entities: [...entities].map(([id, rect]) => ({ id, ...rect, topId: hierarchy.top.get(id), depth: hierarchy.depth.get(id) || 0 })),
-    work: [...work].map(([id, rect]) => ({ id, ...rect })), world, areaRoutes,
+  return {
+    routingVersion:ROUTING_VERSION, layoutVersion:LAYOUT_VERSION, sourcePositions,
+    areas:[...areas].map(([id,rect])=>({id,...rect,color:colors.get(id)})),
+    entities:[...entities].map(([id,rect])=>({id,...rect,topId:hierarchy.top.get(id),depth:hierarchy.depth.get(id)||0})),
+    work:[...work].map(([id,rect])=>({id,...rect})),world,
+    routes:logicalRoutes(snapshot,geometry,hierarchy),
   };
-  const context = { revision, snapshot, geometry, hierarchy, colors, routes: [], areaRoutes };
-  liveContext = context;
-  emitPartial?.({ ...base, routes: [] });
-  const routes = await detailRouting.replace(detailedRoutingScopes(snapshot, geometry, hierarchy, colors));
-  context.routes = routes;
-  return { ...base, routes };
 }
 
-let pendingLayout = null; let pendingLive = null; let processing = false;
-self.onmessage = (event) => { if (event.data.type === "route-drag") pendingLive = event.data; else pendingLayout = event.data; void pump(); };
-
+let pendingLayout=null,pendingPresentation=null,processing=false;
+self.onmessage=({data})=>{if(data.type==='present-routes')pendingPresentation=data;else if(data.type==='layout'||data.type==='arrange')pendingLayout=data;void pump();};
 async function pump() {
-  if (processing) return; processing = true;
+  if(processing)return;processing=true;
   try {
-    while (pendingLive || pendingLayout) {
-      if (pendingLive) {
-        const message = pendingLive; pendingLive = null;
+    while(pendingLayout||pendingPresentation) {
+      if(pendingLayout) {
+        const message=pendingLayout;pendingLayout=null;
+        try {const result=await calculate(message.snapshot);self.postMessage({type:message.type==='arrange'?'arranged':'layout',id:message.id,layoutKey:message.layoutKey,ok:true,result});}
+        catch(error){self.postMessage({type:message.type==='arrange'?'arranged':'layout',id:message.id,layoutKey:message.layoutKey,ok:false,error:String(error?.stack||error)});}
+      } else {
+        await new Promise(resolve=>setTimeout(resolve,0));if(pendingLayout)continue;
+        const message=pendingPresentation;pendingPresentation=null;
         try {
-          const emitPriority = (result) => self.postMessage({ type: "live-routes", revision: message.revision, seq: message.seq, priority: true, ...result });
-          const result = await routeLiveMoves(message, emitPriority); if (result) self.postMessage({ type: "live-routes", revision: message.revision, seq: message.seq, ...result });
-        }
-        catch (error) { self.postMessage({ type: "live-routes", revision: message.revision, seq: message.seq, error: String(error?.stack || error) }); }
-        continue;
+          const start=performance.now(),routes=await routePresentation(message);
+          if(routes.length!==message.routes.length||routes.some(route=>!route.finalGeometry))throw new Error('Final routes are incomplete');
+          self.postMessage({type:'presented-routes',key:message.key,layoutKey:message.layoutKey,seq:message.seq,routes,elapsed:performance.now()-start});
+        }catch(error){self.postMessage({type:'presented-routes',key:message.key,layoutKey:message.layoutKey,seq:message.seq,error:String(error?.stack||error)});}
       }
-      const message = pendingLayout; pendingLayout = null;
-      try {
-        const { id, revision, snapshot } = message;
-        const result = await calculate(snapshot, revision, (partial) => self.postMessage({ id, revision, ok: true, partial: true, result: partial }));
-        self.postMessage({ id, revision, ok: true, result });
-      } catch (error) { self.postMessage({ id: message.id, ok: false, error: String(error?.stack || error) }); }
     }
-  } finally { processing = false; if (pendingLive || pendingLayout) void pump(); }
+  }finally{processing=false;if(pendingLayout||pendingPresentation)void pump();}
 }

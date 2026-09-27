@@ -1,0 +1,48 @@
+async page => {
+  if(!page.url().startsWith('http://127.0.0.1:4174/'))throw Error('Use the isolated system fixture');
+  const state=()=>page.evaluate(async()=>(await fetch('/api/state')).json());
+  await page.locator('.live-pill').click();
+  const details=page.locator('.timeline-heading button[aria-expanded=true]');if(await details.count())await details.click();
+  await page.getByRole('textbox',{name:'Поиск по проекту'}).fill('Шаг заявки 3');
+  await page.locator('.search-results button').first().click();
+  await page.locator('[data-id="entity:module-2"] .entity-node').waitFor();
+  await page.waitForTimeout(450);
+  if(!await page.locator('.route-path').count())throw Error('Search lost rendered connections');
+  const node=page.locator('[data-id="entity:module-2"] .entity-node'),box=await node.boundingBox();
+  const before=await state(),original=before.entities.find(e=>e.id==='module-2');
+  const visibleBefore=await page.locator('[data-id="entity:module-2"]').evaluate(node=>{const m=new DOMMatrixReadOnly(getComputedStyle(node).transform);return {x:m.m41,y:m.m42};});
+  await page.evaluate(()=>{window.frameSamples=[];window.collectFrames=true;let previous=performance.now();const tick=at=>{if(!window.collectFrames)return;window.frameSamples.push(at-previous);previous=at;requestAnimationFrame(tick);};requestAnimationFrame(tick);});
+  const run=await page.locator('.canvas-wrap').getAttribute('data-routing-run');
+  await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();
+  for(let i=1;i<=50;i++){await page.mouse.move(box.x+box.width/2+i*.4,box.y+box.height/2+i*.3);await page.waitForTimeout(16);}
+  const duringRun=await page.locator('.canvas-wrap').getAttribute('data-routing-run');
+  const saved=page.waitForResponse(r=>r.url().endsWith('/api/layout')&&r.request().method()==='POST');
+  const released=Date.now();await page.mouse.up();if(!(await saved).ok())throw Error('Move was rejected');
+  const frames=await page.evaluate(()=>{window.collectFrames=false;return window.frameSamples.filter(x=>x>0).sort((a,b)=>a-b);});
+  await page.waitForFunction(()=>document.querySelector('.canvas-wrap')?.dataset.routingReady==='true');
+  if(!await page.locator('.route-path').count())throw Error('Move lost rendered connections');
+  const settleMs=Date.now()-released;
+  const after=await state(),moved=after.entities.find(e=>e.id===original.id);
+  if(moved.x===original.x&&moved.y===original.y)throw Error('Drag did not move the node');
+  if(run!==duringRun)throw Error('Pointer motion launched final routing');
+  const undo=page.waitForResponse(r=>r.url().endsWith('/api/layout')&&r.request().method()==='POST');
+  await page.keyboard.press('Control+z');if(!(await undo).ok())throw Error('Undo was rejected');
+  const restored=(await state()).entities.find(e=>e.id===original.id);
+  for(const field of ['x','y'])if(Math.abs(restored[field]-visibleBefore[field])>.01)throw Error('Undo changed visible '+field);
+  for(const field of ['areaId','parentId'])if((restored[field]||'')!==(original[field]||''))throw Error('Undo changed '+field);
+  for(const field of ['ownerAreaId','ownerParentId'])if(restored[field]!==original[field])throw Error('Undo changed '+field);
+  await page.waitForFunction(()=>document.querySelector('.canvas-wrap')?.dataset.routingReady==='true');
+  if(!await page.locator('.route-path').count())throw Error('Undo lost rendered connections');
+  await page.screenshot({path:'output/playwright/system-drag-undo.png'});
+  await page.getByRole('button',{name:'Тёмная тема',exact:true}).click();
+  await page.waitForTimeout(200);
+  await page.screenshot({path:'output/playwright/system-dark.png'});
+  await page.getByRole('button',{name:'Светлая тема',exact:true}).click();
+  await page.waitForTimeout(200);
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:'output/playwright/system-narrow.png'});
+  const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
+  await page.setViewportSize({width:1600,height:1000});
+  if(overflow)throw Error('Narrow viewport overflows');
+  return {dragFrameP95Ms:frames[Math.floor(frames.length*.95)],longFrames:frames.filter(x=>x>=100).length,settleMs,noRoutingDuringDrag:true,undoRestoredOwnerFields:true,narrowOverflow:false};
+}

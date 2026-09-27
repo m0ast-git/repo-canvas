@@ -1,0 +1,113 @@
+async page => {
+  if(!page.url().startsWith('http://127.0.0.1:4174/'))throw Error('Use the isolated appearance fixture on 4174');
+  await page.unroute('**/api/state*');
+  await page.unroute('**/api/history/geometry');
+  await page.unroute('**/api/revision');
+  const check=(ok,message)=>{if(!ok)throw Error(message);};
+  const original=await page.evaluate(async()=>(await fetch('/api/state')).json());
+  check(original.map.projectTitle==='Принадлежность, планы и работа','Unexpected fixture');
+  const stamp=Date.now();
+  let fixture={...original,work:original.work.map(work=>({...work,updatedAt:new Date(stamp-(work.id==='expired'?20*60_000:0)).toISOString()}))};
+  await page.route('**/api/state*',route=>route.fulfill({contentType:'application/json',body:JSON.stringify(fixture)}));
+  await page.route('**/api/revision',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({revision:fixture.revision})}));
+  await page.route('**/api/history/geometry',route=>route.fulfill({contentType:'application/json',body:'{"saved":false}'}));
+  await page.setViewportSize({width:1600,height:1000});
+  await page.reload();
+  await page.locator('.area-node').first().waitFor();
+  await page.waitForFunction(()=>document.querySelector('.canvas-wrap')?.dataset.routingReady==='true');
+  const zoom=async value=>{await page.getByRole('combobox',{name:'Масштаб карты',exact:true}).selectOption(String(Math.round(Number(value)*100)));await page.waitForTimeout(350);};
+  const inspect=()=>page.evaluate(()=>{
+    const style=(node,pseudo)=>node?getComputedStyle(node,pseudo):null;
+    const normalize=color=>{const c=document.createElement('canvas').getContext('2d');c.fillStyle=color;return c.fillStyle;};
+    const border=(node,pseudo)=>({color:normalize(style(node,pseudo).borderColor),style:style(node,pseudo).borderStyle,width:parseFloat(style(node,pseudo).borderWidth)});
+    const areas=Object.fromEntries([...document.querySelectorAll('.area-node')].map(node=>[node.closest('[data-id]').dataset.id.slice(5),{...border(node,'::before'),sourceColor:normalize(style(node).getPropertyValue('--area-color')),background:style(node,'::before').backgroundColor,status:node.dataset.status,active:node.classList.contains('is-active')}]));
+    const groups=Object.fromEntries([...document.querySelectorAll('.group-node')].map(node=>[node.closest('[data-id]').dataset.id.slice(7),{...border(node.querySelector('.group-contour')),status:node.dataset.status,active:node.classList.contains('is-active')}]));
+    const entities=Object.fromEntries([...document.querySelectorAll('.entity-node')].map(node=>[node.closest('[data-id]').dataset.id.slice(7),{...border(node.querySelector('.canvas-card')),active:node.classList.contains('is-active'),selected:node.querySelector('.canvas-card').classList.contains('is-selected'),color:normalize(style(node).getPropertyValue('--area-color'))}]));
+    const routes=[...document.querySelectorAll('[data-route-source]')].map(group=>{const path=group.querySelector('.route-path');const edge=group.closest('.react-flow__edge');const markers=[...edge.querySelectorAll('marker path')].map(p=>normalize(style(p).fill));return {source:group.dataset.routeSource,target:group.dataset.routeTarget,id:edge.dataset.id,path:path.getAttribute('d'),color:normalize(style(path).stroke),dash:style(path).strokeDasharray,planned:path.classList.contains('route-planned'),markers};});
+    const beacons=[...document.querySelectorAll('.work-activity')].map(node=>({id:node.closest('[data-id]').dataset.id,pulsing:node.dataset.pulsing,animation:style(node.querySelector('i'),'::after').animationName,opacity:style(node.querySelector('i'),'::after').opacity,transform:style(node.querySelector('i'),'::after').transform,size:node.querySelector('i').getBoundingClientRect().width}));
+    return {areas,groups,entities,routes,beacons,run:document.querySelector('.canvas-wrap').dataset.routingRun,canvas:style(document.querySelector('.canvas-wrap')).backgroundColor};
+  });
+  const reports=[];
+  for(const theme of ['light','dark']) {
+    const toggle=page.getByRole('button',{name:theme==='light'?'Светлая тема':'Тёмная тема',exact:true});
+    if(await toggle.count())await toggle.click();
+    await page.getByRole('button',{name:'Показать всю карту',exact:true}).click();
+    await zoom('0.25');
+    const far=await inspect();
+    check(Object.keys(far.areas).length===3,'Overview lost an area');
+    check(new Set(Object.values(far.areas).map(a=>a.color)).size===3,'Area contours lost distinct colors');
+    for(const area of Object.values(far.areas))check(area.color===area.sourceColor,'Contour differs from outgoing color');
+    check(far.areas.future.style==='dashed'&&far.areas.intake.style==='solid'&&far.areas.delivery.style==='solid','Area planned/mixed status is wrong');
+    check(far.groups['planned-group'].style==='dashed'&&far.groups.group.style==='solid','Group outlines lost status');
+    check(far.areas.intake.active&&!far.areas.delivery.active&&!far.areas.future.active,'Wrong area claims current work');
+    check(far.beacons.some(b=>b.id==='area:intake'&&b.animation==='graph-activity-pulse'),'Overview has no live area pulse');
+    check(far.beacons.every(b=>!['work:blocked','work:planned','work:expired','entity:ready'].includes(b.id)),'Inactive work is pulsing');
+    const regular=far.routes.filter(r=>!r.target.startsWith('work:'));
+    check(!regular.some(r=>r.source==='entity:group'&&r.target==='entity:running'),'Containment relationship was drawn');
+    check(regular.some(r=>r.source==='entity:neutral'&&r.color===(theme==='light'?'#777777':'#a0a9b2')),'Neutral source was recolored');
+    for(const route of regular) {
+      if([route.source,route.target].some(id=>['entity:planned-child','entity:planned-group','entity:future-node'].includes(id)))check(route.planned&&route.dash!=='none','Planned endpoint has a solid line');
+      if(route.source==='entity:group'||route.source==='entity:other')check(route.color===far.areas.intake.color,'Outgoing line differs from its mother area');
+    }
+    const exchange=regular.find(r=>r.markers.length===2);
+    check(exchange&&exchange.markers.includes(far.areas.intake.color)&&exchange.markers.includes(far.areas.delivery.color),'Exchange lost an origin color');
+    const areaPulse=far.beacons.find(b=>b.id==='area:intake');
+    await page.waitForTimeout(430);
+    const later=(await inspect()).beacons.find(b=>b.id==='area:intake');
+    check(later&&(later.opacity!==areaPulse.opacity||later.transform!==areaPulse.transform),'Pulse does not actually move');
+    await page.screenshot({path:`output/playwright/appearance-${theme}-overview.png`});
+    await zoom('0.55');
+    const middle=await inspect();
+    check(middle.entities.running.active&&middle.entities.other.active&&middle.groups.group.active,'Target or parent lost work highlight');
+    check(!middle.areas.intake.active,'Near view duplicates area pulse');
+    check(middle.beacons.some(b=>b.id==='entity:running'&&b.animation==='graph-activity-pulse'),'Near target does not pulse');
+    for(const route of middle.routes) {
+      const previous=far.routes.find(r=>r.id===route.id);
+      if(previous)check(previous.path===route.path,'Zoom changed route geometry');
+    }
+    check(middle.run===far.run,'Zoom launched the router');
+    await page.screenshot({path:`output/playwright/appearance-${theme}-middle.png`});
+    await page.getByRole('textbox',{name:'Поиск по проекту'}).fill('Приём данных');
+    await page.locator('.search-results button').first().click();
+    await zoom('1');
+    const close=await inspect();
+    check(close.entities.running?.active&&close.entities.running?.selected,'Selected close target lost current-work state');
+    check(close.beacons.some(b=>b.id==='entity:running'),'Close target indicator missing');
+    check(close.run===far.run,'Selection or close zoom launched the router');
+    await page.screenshot({path:`output/playwright/appearance-${theme}-close.png`});
+    await page.keyboard.press('Escape');
+    reports.push({theme,areas:far.areas,routeCount:far.routes.length,exchange:exchange.markers,areaPulse:true,targetPulse:true,zoomKeepsGeometry:true});
+  }
+  await page.emulateMedia({reducedMotion:'reduce'});
+  check((await inspect()).beacons.every(b=>b.animation==='none'),'Reduced motion still animates');
+  check((await inspect()).beacons.length>0,'Reduced motion lost the static signal');
+  await page.emulateMedia({reducedMotion:'no-preference'});
+  await page.getByRole('button',{name:'Показать всю карту',exact:true}).click();
+  await zoom('0.55');
+  const frames=await page.evaluate(()=>new Promise(resolve=>{const samples=[];let last=performance.now();const start=last;const tick=now=>{samples.push(now-last);last=now;if(now-start>=1800)resolve(samples);else requestAnimationFrame(tick);};requestAnimationFrame(tick);}));
+  frames.sort((a,b)=>a-b);
+  const beforeWheel=await inspect();
+  const bounds=await page.locator('.canvas-wrap').boundingBox();
+  await page.evaluate(()=>{window.appearanceFrames=[];window.appearanceRecording=true;let last=performance.now();const tick=now=>{if(!window.appearanceRecording)return;window.appearanceFrames.push(now-last);last=now;requestAnimationFrame(tick);};requestAnimationFrame(tick);});
+  await page.mouse.move(bounds.x+bounds.width*.5,bounds.y+bounds.height*.5);
+  await page.mouse.wheel(0,-120); await page.waitForTimeout(400);
+  await page.mouse.wheel(0,120); await page.waitForTimeout(400);
+  await page.mouse.move(bounds.x+40,bounds.y+60);await page.mouse.down();
+  await page.mouse.move(bounds.x+160,bounds.y+110,{steps:15});await page.mouse.up();
+  await page.waitForTimeout(200);
+  const motionFrames=await page.evaluate(()=>{window.appearanceRecording=false;return window.appearanceFrames.sort((a,b)=>a-b);});
+  const afterWheel=await inspect();
+  check(beforeWheel.run===afterWheel.run,'Wheel launched routing');
+  for(const route of afterWheel.routes){const previous=beforeWheel.routes.find(r=>r.id===route.id);if(previous)check(previous.path===route.path,'Wheel changed a path');}
+  fixture={...fixture,revision:fixture.revision+1,entities:fixture.entities.map(entity=>entity.id==='future-node'?{...entity,status:'operational'}:entity)};
+  await page.waitForFunction(()=>document.querySelector('[data-id="area:future"] .area-node')?.dataset.status==='existing',null,{timeout:10000});
+  const implemented=await inspect();
+  check(implemented.areas.future.style==='solid','Completed area kept a planned outline');
+  check(implemented.routes.filter(route=>route.target==='entity:future-node'&&!route.source.startsWith('work:')).every(route=>!route.planned),'Implemented endpoint kept a planned line');
+  check(implemented.run===afterWheel.run,'Implementation status launched routing');
+  fixture={...fixture,revision:fixture.revision+1,work:fixture.work.map(work=>work.id==='active'?{...work,status:'done'}:work)};
+  await page.waitForFunction(()=>!document.querySelector('[data-id="work:active"]'),null,{timeout:10000});
+  check((await inspect()).beacons.length===0,'Completion left a pulse on targets or areas');
+  await page.screenshot({path:'output/playwright/appearance-completed.png'});
+  return {reports,reducedMotion:true,completedClears:true,implementationUpdatesWithoutRouting:true,wheelAndPanKeepGeometry:true,frames:{count:frames.length,p95:frames[Math.floor(frames.length*.95)],over100:frames.filter(n=>n>=100).length},motionFrames:{count:motionFrames.length,p95:motionFrames[Math.floor(motionFrames.length*.95)],over100:motionFrames.filter(n=>n>=100).length},fixtureOnly:true};
+}

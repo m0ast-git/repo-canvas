@@ -113,7 +113,7 @@ export function buildSearchItems(snapshot, work = []) {
       kind: "entity", id: entity.id, label: entity.ownerLabel || entity.label,
       description: entity.ownerPurpose || entity.purpose || areaById.get(entity.areaId)?.ownerTitle || areaById.get(entity.areaId)?.title || "Элемент проекта",
       areaId: entity.areaId || "",
-      text: searchText([entity.ownerLabel, entity.label, entity.ownerPurpose, entity.purpose, entity.path, entity.kind, areaById.get(entity.areaId)?.ownerTitle, areaById.get(entity.areaId)?.title]),
+      text: searchText([entity.ownerLabel, entity.label, entity.ownerPurpose, entity.purpose, entity.path, entity.technicalName, entity.id, entity.kind, areaById.get(entity.areaId)?.ownerTitle, areaById.get(entity.areaId)?.title]),
     })),
     ...work.map((item) => ({
       kind: "work", id: item.id, label: item.title, description: item.actor || "agent", work: item,

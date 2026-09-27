@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 
 export function codexSessionsRoot() {
   return process.env.REPO_CANVAS_CODEX_SESSIONS || path.join(os.homedir(), ".codex", "sessions");
@@ -71,6 +70,7 @@ export function readAppendedRecords(file, offset = 0, options = {}) {
     const buffer = Buffer.allocUnsafe(length);
     const bytesRead = fs.readSync(descriptor, buffer, 0, length, start);
     const records = [];
+    const locations = [];
     let lineStart = 0;
     let consumed = 0;
     let linesSeen = 0;
@@ -99,7 +99,7 @@ export function readAppendedRecords(file, offset = 0, options = {}) {
       if (lineLength > maxRecordBytes) {
         skippedOversizedRecords += 1;
       } else if (lineLength > 0) {
-        try { records.push(JSON.parse(buffer.subarray(lineStart, lineEnd).toString("utf8"))); }
+        try { records.push(JSON.parse(buffer.subarray(lineStart, lineEnd).toString("utf8"))); locations.push({start:start+lineStart,end:start+lineEnd}); }
         catch { /* malformed complete records are ignored, matching the previous parser */ }
       }
       linesSeen += 1;
@@ -114,7 +114,7 @@ export function readAppendedRecords(file, offset = 0, options = {}) {
     }
 
     return {
-      records, offset: start + consumed, bytesRead, skippedOversizedRecords, discardingOversizedRecord,
+      records, locations, offset: start + consumed, bytesRead, skippedOversizedRecords, discardingOversizedRecord,
     };
   } finally {
     fs.closeSync(descriptor);
@@ -145,10 +145,19 @@ export function pathBelongsToRoot(candidate, root) {
 
 function gitCommonDirectory(cwd) {
   if (!cwd || !fs.existsSync(cwd)) return null;
-  const result = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-    cwd, encoding: "utf8", timeout: 3_000, windowsHide: true,
-  });
-  return result.status === 0 ? comparable(result.stdout.trim()) : null;
+  // Avoid starting Git for every unrelated session directory during discovery.
+  let directory=path.resolve(cwd);
+  while(true) {
+    const marker=path.join(directory,".git");
+    try {
+      const stat=fs.statSync(marker);
+      let gitDir=stat.isDirectory()?marker:path.resolve(directory,fs.readFileSync(marker,"utf8").match(/^gitdir:\s*(.+)/m)?.[1]?.trim()||".git");
+      const common=path.join(gitDir,"commondir");
+      if(fs.existsSync(common))gitDir=path.resolve(gitDir,fs.readFileSync(common,"utf8").trim());
+      return comparable(fs.realpathSync.native(gitDir));
+    } catch(error) {if(error.code!=="ENOENT"&&error.code!=="ENOTDIR")return null;}
+    const parent=path.dirname(directory);if(parent===directory)return null;directory=parent;
+  }
 }
 
 export function sessionBelongsToRepository(meta, repoRoot, cache = new Map()) {
@@ -175,7 +184,7 @@ export function sessionSignals(record) {
   if (record?.type === "event_msg") {
     if (payload.type === "task_started") return [{ kind: "start", turnId: payload.turn_id, at: payload.started_at }];
     if (payload.type === "user_message") return [{ kind: "user", text: shortText(payload.message), at: record.timestamp }];
-    if (payload.type === "agent_message") return [{ kind: "agent", text: shortText(payload.message), phase: payload.phase, at: record.timestamp }];
+    if (payload.type === "agent_message" && payload.phase!=="analysis") return [{ kind: "agent", text: shortText(payload.message), phase: payload.phase, at: record.timestamp }];
     if (payload.type === "task_complete") return [{ kind: "complete", turnId: payload.turn_id, at: payload.completed_at || record.timestamp }];
     if (payload.type === "turn_aborted") return [{ kind: "aborted", turnId: payload.turn_id, reason: payload.reason, at: payload.completed_at || record.timestamp }];
     return [];

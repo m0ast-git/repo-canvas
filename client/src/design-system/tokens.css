@@ -1,0 +1,97 @@
+@import "./fonts/ibm-plex-sans.css";
+
+.rc-system {
+  --rc-font: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --rc-font-mono: Consolas, "Cascadia Mono", monospace;
+  --rc-space-1: 4px;
+  --rc-space-2: 8px;
+  --rc-space-3: 12px;
+  --rc-space-4: 16px;
+  --rc-space-6: 24px;
+  --rc-space-8: 32px;
+  --rc-space-12: 48px;
+  --rc-text-caption: 12px;
+  --rc-text-label: 13px;
+  --rc-text-body: 15px;
+  --rc-text-node: 20px;
+  --rc-text-title: 26px;
+  --rc-text-display: 32px;
+  --rc-line-height: 1.45;
+  --rc-radius-control: 6px;
+  --rc-radius-node: 8px;
+  --rc-control-height: 36px;
+  --rc-control-target: 32px;
+  --rc-node-padding: 16px;
+  --rc-panel-padding: 24px;
+  --rc-panel-width: 320px;
+  --rc-edge-width: 1.8px;
+  --rc-edge-focus-width: 2.6px;
+  --rc-edge-radius: 16px;
+  --rc-duration-fast: 120ms;
+  --rc-duration-panel: 180ms;
+  --rc-canvas: #ffffff;
+  --rc-surface: #ffffff;
+  --rc-surface-raised: #ffffff;
+  --rc-surface-hover: #f3f3f3;
+  --rc-text: #252525;
+  --rc-text-secondary: #616161;
+  --rc-border: #dce2de;
+  --rc-graph-border: #7d8d82;
+  --rc-area-surface: #f5f8f6;
+  --rc-group-surface: #fbfcfb;
+  --rc-border-control: #898989;
+  --rc-accent: #275a37;
+  --rc-accent-hover: #1e472b;
+  --rc-accent-soft: #eaf2ed;
+  --rc-on-accent: #ffffff;
+  --rc-area-olive: #838752;
+  --rc-area-leaf: #5b8f69;
+  --rc-area-teal: #2e928c;
+  --rc-edge-neutral: #777777;
+  --rc-error: #a73535;
+  --rc-error-surface: #fff1f1;
+  --rc-warning: #77591c;
+  --rc-warning-surface: #fff7df;
+  --rc-shadow-node: 0 2px 6px #00000009;
+  --rc-shadow-overlay: 0 16px 48px #00000024;
+  --rc-backdrop: #00000050;
+  font: 400 var(--rc-text-body)/var(--rc-line-height) var(--rc-font);
+  font-synthesis: none;
+  color: var(--rc-text);
+  background: var(--rc-canvas);
+  color-scheme: light;
+}
+
+.rc-system[data-rc-theme="dark"] {
+  --rc-canvas: #14181c;
+  --rc-surface: #1b2128;
+  --rc-surface-raised: #202830;
+  --rc-surface-hover: #2a343d;
+  --rc-text: #f0f2f4;
+  --rc-text-secondary: #b3bfcd;
+  --rc-border: #39444f;
+  --rc-graph-border: #83958b;
+  --rc-area-surface: #19221e;
+  --rc-group-surface: #1d2822;
+  --rc-border-control: #71818f;
+  --rc-accent: #9bd6b5;
+  --rc-accent-hover: #b6e4c9;
+  --rc-accent-soft: #283b30;
+  --rc-on-accent: #181c22;
+  --rc-area-olive: #bcc38b;
+  --rc-area-leaf: #a4d3ac;
+  --rc-area-teal: #75d2c9;
+  --rc-edge-neutral: #a0a9b2;
+  --rc-error: #ffadad;
+  --rc-error-surface: #3c252a;
+  --rc-warning: #f4cf80;
+  --rc-warning-surface: #37301f;
+  --rc-shadow-node: 0 2px 6px #00000020;
+  --rc-shadow-overlay: 0 16px 48px #00000060;
+  --rc-backdrop: #00000085;
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rc-system { --rc-duration-fast: 0ms; --rc-duration-panel: 0ms; }
+}

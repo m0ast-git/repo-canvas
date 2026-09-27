@@ -7,6 +7,7 @@ import net from "node:net";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { replaceFileSync } from "./atomic-file.mjs";
+import {verifyReleaseAttestation} from "./release-verification.mjs";
 
 const MAX_ASSET_BYTES = 50 * 1024 * 1024;
 
@@ -204,6 +205,7 @@ async function main() {
   try {
     await waitForParent(job.parentPid);
     await downloadRelease(job.release, tarball, job.allowNonGithub);
+    await verifyReleaseAttestation(tarball,job.release.version);
     const cli = await installRelease(job, tarball, temporary, finalDirectory);
     atomicWriteJson(job.currentPointerFile, { version: job.release.version, cli, installedAt: new Date().toISOString() });
     switched = true;

@@ -179,27 +179,18 @@ try {
 
   const health = await waitForUpdatedServer(canvasPort, token, server.pid);
   activePid = health.pid;
-  assert.notEqual(activePid, server.pid, "Self-update did not replace the server process");
+  assert.notEqual(activePid, server.pid, "Failed update did not restore the original server");
   const updateStateFile = path.join(root, ".repo-canvas", "runtime", "update-state.json");
-  const runnerDeadline = Date.now() + 5_000;
-  while (Date.now() < runnerDeadline) {
-    try { if (JSON.parse(fs.readFileSync(updateStateFile, "utf8")).status === "updated") break; } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const status = await request(canvasPort, token, "/api/update/status?refresh=1");
+  const status = await request(canvasPort, token, "/api/update/status");
   assert.equal(status.status, 200, status.text);
-  assert.equal(status.json.currentVersion, targetVersion);
-  assert.equal(status.json.status, "updated");
-  assert.equal(status.json.fromVersion, "0.0.1");
-  assert.ok(Date.parse(status.json.finishedAt));
-  const pointerFile = path.join(root, ".repo-canvas", "runtime", "current.json");
-  const updateState = fs.readFileSync(updateStateFile, "utf8");
-  assert.equal(JSON.parse(updateState).status, "updated", updateState);
-  assert.ok(fs.existsSync(pointerFile), `Updater did not activate the runtime: ${updateState}`);
-  const pointer = JSON.parse(fs.readFileSync(pointerFile, "utf8"));
-  assert.equal(pointer.version, targetVersion);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, ".repo-canvas", "runtime", "versions", targetVersion, "node_modules", "repo-canvas", "package.json"), "utf8")).version, targetVersion);
-  console.log(`Self-update smoke test passed: 0.0.1 -> ${targetVersion}`);
+  assert.equal(status.json.currentVersion, "0.0.1");
+  assert.equal(status.json.status, "failed");
+  const updateState = JSON.parse(fs.readFileSync(updateStateFile, "utf8"));
+  assert.equal(updateState.status, "failed");
+  assert.ok(updateState.error);
+  assert.ok(!fs.existsSync(path.join(root, ".repo-canvas", "runtime", "current.json")), "Unsigned package was activated");
+  assert.ok(!fs.existsSync(path.join(root, ".repo-canvas", "runtime", "versions", targetVersion, "node_modules", "repo-canvas")), "Unsigned package was installed");
+  console.log(`Self-update rejected unsigned ${targetVersion} and restored 0.0.1`);
 } finally {
   if (canvasPort && token) {
     try { activePid ||= (await request(canvasPort, token, "/api/health")).json?.pid; } catch {}

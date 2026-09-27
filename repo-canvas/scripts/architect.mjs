@@ -1,12 +1,21 @@
+import {promptTemplate} from "./prompt-template.mjs";
 import crypto from "node:crypto";
+import { archiveEvidence } from "./source-archive.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { runStructured, createProviderSession, selectModelProfile, taskComplexity } from "./model-providers.mjs";
+import { readRuntimeConfig } from "./runtime-config.mjs";
+import { readCodeSource, sourceInventory, sourcePackage, readDialogSource, codeState, readSourceJson, writeSourceJson, repositoryFiles } from "./project-sources.mjs";
+import { collectProjectKnowledge, readProjectKnowledge, publicKnowledge } from "./project-knowledge.mjs";
+import { EVIDENCE_REVIEW_SCHEMA, evidencePackage, evidenceReviewPrompt, assertEvidenceUnchanged, focusEvidenceMap } from "./evidence-review.mjs";
 import { getSnapshot } from "./canvas-store.mjs";
+import { semanticSignature } from "./semantic-signature.mjs";
 import { projectRoot, resolveDataDirectory } from "./project-root.mjs";
 import { MODEL_PROFILES, createCodexStructuredSession, runCodexStructured } from "./model-runtime.mjs";
-import { ARCHITECT_OUTPUT_SCHEMA, ARCHITECT_REVIEW_SCHEMA, applyArchitecture, validateArchitecture } from "./semantic-model.mjs";
+import { ARCHITECT_OUTPUT_SCHEMA, ARCHITECT_REVIEW_SCHEMA, applyArchitecture, validateArchitecture, normalizeArchitecture } from "./semantic-model.mjs";
+import {buildModuleCards,enrichModuleCards,moduleContext,selectInitialReferences} from "./module-cards.mjs";
 
 function compactCurrentMap(snapshot) {
   return {
@@ -18,83 +27,7 @@ function compactCurrentMap(snapshot) {
 }
 
 export function architectPrompt({ snapshot, refresh, viewpoint = "", language = null }) {
-  const current = refresh ? JSON.stringify(compactCurrentMap(snapshot)) : "No prior semantic map exists.";
-  return `You are Repo Canvas Architect. Build an evidence-backed, human-readable project map of the repository in your current working directory.
-
-This is the first turn of one persistent read-only Architect session. Use medium-depth analysis. Inspect the repository once now; after you return the candidate, an independent reviewer may send focused follow-up feedback into this same session. Reuse the evidence and context already collected for those follow-ups instead of rereading the repository. Do not modify files and do not call Repo Canvas commands.
-
-Your job is to give the repository owner a reliable mental model of the project: what it does, which responsibility-bearing parts it owns, what state those parts are in and how they collaborate. Those same parts must be useful targets for live agent work. Choose the composition that best fits the evidence: a flow, hierarchy, core with extensions, domain/context landscape, clustered system or justified hybrid. A key flow tests coverage; it never dictates the canvas shape. The owner may supply a preferred viewpoint below; follow it when it is compatible with repository evidence.
-
-Work in this order before producing output:
-1. Inventory repository truth before extracting concepts: identify active/canonical documentation, executable current reality, explicitly historical material and approved-but-unimplemented plans. Respect precedence declarations made by the repository itself. Do not average active and stale sources together.
-2. Write projectSummary as the map thesis in two to four plain sentences: what the project does, who uses or operates it when people exist, what enters, what useful result leaves and which major promises are still only planned.
-3. Identify responsibility boundaries using DDD context-map principles. Each area owns one coherent responsibility and vocabulary; in non-business projects it may be a subsystem, execution boundary, stage family, platform surface or infrastructure responsibility.
-4. Admit a normal map entity only when all three are true: it has one named responsibility, durable repository evidence, and it is a meaningful target for implementation or understanding work. A capability is allowed only when it has its own evidenced responsibility; an end-to-end narrative that merely repeats a keyFlow is not an entity.
-5. When the product genuinely involves a human user, operator, reviewer or other participant, represent that person with kind=person as outside context: areaId="", parentId="", path="". Use the concrete domain role from primary evidence. Its purpose describes only what that person inputs, does, decides, expects or receives; never assign the system's whole workflow to a person. Every person must have at least one explanatory relation to a project entity.
-6. Keep non-human external systems as kind=external. Input files, output files and abstract outcomes belong in relation contracts or keyFlow trigger/outcome text unless the repository manages them as an actual store or contract.
-7. Build a parent hierarchy only when a parent owns a broader responsibility and its children are independently useful work targets. A parent is a transparent subsystem contour around its children, not another project area. Service, store, interface and integration may be peers when they share the same responsibility depth. Never add a parent merely to group a folder, framework or technology, and never duplicate one concept as both a broad narrative node and its implementation boundary.
-8. Trace important end-to-end scenarios from trigger to outcome. keyFlows validate coverage and direction through real project entities; people and conceptual actions stay in trigger/outcome text and are not keyFlow steps.
-9. Derive relations from actual runtime, data, control, event, contract or necessary dependency evidence, then review the draft against the quality gates below.
-
-Language contract:
-- every human-visible area title/note, entity label/purpose/note, relation label, key-flow title/trigger/outcome and unresolved question uses one consistent language;
-- build and update the Canvas in the language used by the owner in the current dialogue; a non-empty owner viewpoint is the strongest language signal;
-- preserve the original spelling only for official product, technology, library, protocol, file, command and code-identifier names; do not mix languages merely for brevity or technical tone;
-- when the current request has no usable language signal, use the explicitly requested setup language, then the stored map language, then user-facing product text and primary project documentation;
-- code identifiers, filenames, protocol names and contract names may remain technical, but do not turn them into unexplained user-visible jargon;
-- write for the repository owner: prefer plain domain language over framework slang, abbreviations and architecture terminology the project itself does not explain.
-- clarity and exact responsibility beat artificial brevity: do not compress a meaningful role into a cryptic noun phrase just to keep a label short;
-- a conjunction in a title is a warning to re-check the boundary, not an automatic error: keep it only when the evidence proves one inseparable responsibility rather than two convenient buckets.
-
-Requirements:
-- stable concise ASCII ids;
-- short Russian labels and descriptions when repository context is Russian, otherwise use its working language;
-- every area title answers 'what responsibility lives here?' in concrete owner language; avoid abstract buckets such as 'user product', 'runtime', src, backend, utils, misc or tests;
-- an area is a domain responsibility territory, never a technology layer or a renamed keyFlow; put implementation boundaries and technical stack detail in evidenced parent/entity passports;
-- normal entities may be capabilities, modules, services, processes, stores, interfaces, integrations, externals or components; human participants use kind=person and stay outside all areas;
-- do not mirror folders, individual files, classes, helpers, tests or completed tasks;
-- every entity has concrete repository evidence; use evidence paths/symbols as references, never as the entity identity;
-- every relation is unidirectional and its visible label is a specific verb plus object consistent with that direction, for example 'передаёт сырой профиль' or 'публикует событие проверки';
-- never use vague labels such as 'uses', 'depends on', 'interacts with', 'связан с', 'использует' or 'зависит от' without naming the actual action/object;
-- contract names what crosses the boundary; mechanism names how it crosses (HTTP, queue, SQL, import, function call, file, etc.); leave either empty only when evidence genuinely does not expose it;
-- evidence must support both relation endpoints and direction;
-- path is optional reference evidence and never the identity of an entity;
-- operational means current executable or otherwise working project reality; disabled is retained history that still matters; planned is an approved concept that is not implemented. Do not make planned relations float between only operational entities;
-- report removals only when refreshing and the concept genuinely no longer exists;
-- a renamed, moved or reimplemented concept keeps its stable entity id;
-- choose a warm distinct hex identity color for every area; keep existing owner colors on refresh unless the area is new;
-- layoutIntent describes the project's useful composition, not a visual decoration; layoutDirection may be AUTO when no axis is semantically dominant;
-- there is no count limit: include every evidenced element required to understand the project, whether that is 4 or 400, but stop before implementation noise;
-- unresolvedQuestions contains important ambiguities that evidence cannot resolve; do not turn those ambiguities into entities or relations;
-- every parentId, relation endpoint and keyFlow step is an exact id from the returned or retained entity set;
-- keyFlow steps contain entity ids only; conceptual actions that are not map entities belong in trigger/outcome text and must never be invented as step ids;
-- return the required structured output only.
-
-Quality gates:
-- a new reader can explain the responsibility of every area and entity from its name and purpose;
-- every relation answers 'what does the source do to/for the target?';
-- important repository outcomes can be followed through keyFlows;
-- no duplicate concepts at different abstraction levels;
-- every normal entity is a credible work target; people are context participants and never work targets;
-- every person's name is a concrete evidenced role and its purpose describes only that person's side of the interaction;
-- projectSummary lets a reader explain the project before opening any card;
-- no entity or relation exists solely because a similarly named folder/file exists;
-- uncertain claims are omitted and listed in unresolvedQuestions.
-
-Mandatory preflight before returning JSON:
-1. Build the exact set of returned and retained area ids and verify every normal entity.areaId against it; every person has empty areaId, parentId and path.
-2. Build the exact set of returned and retained entity ids and verify every non-empty parentId, relation from/to and every keyFlow step against it.
-3. Verify parent chains are acyclic and remain inside one area.
-4. Verify removed ids are not referenced anywhere in the new map.
-5. Verify every person participates in a relation and every planned relation touches a planned entity.
-6. Verify all human-visible text follows the language contract above.
-If any check fails, correct the JSON before returning it. Never return a knowingly invalid draft.
-
-Refresh mode: ${refresh ? "yes" : "no"}
-Owner viewpoint: ${viewpoint || "No preference; choose from repository evidence."}
-Target visible language: ${language || "Infer one consistent owner language from user-facing repository evidence."}
-Current semantic map:
-${current}`;
+  return promptTemplate("architect",{LANGUAGE:language||"infer from the owner's messages and existing map",REFRESH:refresh?"yes":"no",VIEWPOINT:viewpoint||"No additional preference",CURRENT_MAP:refresh?JSON.stringify(compactCurrentMap(snapshot)):"No prior map."});
 }
 
 function sameIds(before, after, field) {
@@ -156,25 +89,122 @@ function visibleFields(value) {
 
 const UNTRANSLATED_RUSSIAN_GENERIC = /\b(runtime|workflow|feedback|corrections?|proposed|output|request|response|pipeline|handler|store|adapter|engine|router|status|signals?|overrides?)\b/gi;
 
-export function architectureLanguageIssues(value, language) {
+export function architectureLanguageIssues(value, language, readerProfile = {}) {
   if (!language) return [];
   const issues = [];
   for (const [field, text] of visibleFields(value)) {
-    if (language === "ru") {
+    if (/^ru(?:-|$)/.test(language)) {
       const singleTechnicalName = /^[A-Za-z][A-Za-z0-9+.#/-]{1,30}$/.test(text.trim());
-      if (!/[А-Яа-яЁё]/.test(text) && !singleTechnicalName) issues.push(`${field} must use Russian owner-facing language`);
-      const generic = [...text.matchAll(UNTRANSLATED_RUSSIAN_GENERIC)].map((match) => match[0].toLowerCase());
+      if (field!=="map.projectTitle" && !/[А-Яа-яЁё]/.test(text) && !singleTechnicalName) issues.push(`${field} must use Russian owner-facing language`);
+      const prose=text.replace(/(?:^|\s)(?:\/|\.repo-canvas\/)[^\s,;]+|`[^`]*`|[\w./-]+\.(?:[cm]?jsx?|tsx?|py|md|json|toml)(?::\d+(?:-\d+)?)?|["'][A-Za-z_][\w.]*["']|\.[A-Za-z_][\w.]*|\b\w+\s*[:=]\s*["']?\w+["']?/g, "");
+      const familiar=new Set((readerProfile.terms||[]).flatMap(term=>String(term).toLowerCase().match(/[a-z]+/g)||[]));
+      const generic = [...prose.matchAll(UNTRANSLATED_RUSSIAN_GENERIC)].map((match) => match[0].toLowerCase()).filter(term=>!familiar.has(term));
       if (generic.length) issues.push(`${field} contains untranslated generic terms: ${[...new Set(generic)].join(", ")}`);
     }
-    if (language === "en" && /[А-Яа-яЁё]/.test(text)) issues.push(`${field} must use English owner-facing language`);
+    if (/^en(?:-|$)/.test(language) && /[А-Яа-яЁё]/.test(text)) issues.push(`${field} must use English owner-facing language`);
   }
   return issues;
 }
 
-export function validateArchitectureLanguage(value, language) {
-  const issues = architectureLanguageIssues(value, language);
+export function validateArchitectureLanguage(value, language, readerProfile) {
+  const issues = architectureLanguageIssues(value, language, readerProfile);
   if (issues.length) throw new Error(`Visible language '${language}' failed: ${issues.slice(0, 16).join("; ")}`);
   return value;
+}
+
+export function applyKnownVocabulary(value,language,profile={}) {
+  if(!/^ru(?:-|$)/.test(language))return value;
+  const glossary={runtime:"среда запуска",workflow:"рабочий процесс",feedback:"обратная связь",correction:"поправка",corrections:"поправки",proposed:"предложено",output:"результат",request:"запрос",response:"ответ",pipeline:"цепочка обработки",handler:"обработчик",store:"хранилище",adapter:"адаптер",engine:"механизм",router:"маршрутизатор",status:"статус",signal:"сигнал",signals:"сигналы",override:"ручная настройка",overrides:"ручные настройки"};
+  const fields=languageRepairFields(value,language,profile);
+  if(!fields.length)return value;
+  const edits=fields.map(({field,text})=>({field,text:text.replace(/`[^`]*`|[\w./-]+\.(?:[cm]?jsx?|tsx?|py|md|json|toml)|\b(?:runtime|workflow|feedback|corrections?|proposed|output|request|response|pipeline|handler|store|adapter|engine|router|status|signals?|overrides?)\b/gi,word=>glossary[word.toLowerCase()]||word)}));
+  return applyLanguageRepair(value,edits,fields);
+}
+
+export function languageRepairFields(value,language,profile) {
+  const issues=architectureLanguageIssues(value,language,profile);
+  return visibleFields(value).filter(([field])=>issues.some(issue=>issue.startsWith(`${field} `))).map(([field,text])=>({field,text}));
+}
+
+export function applyLanguageRepair(value,edits,allowedFields) {
+  const next=structuredClone(value),allowed=new Set(allowedFields.map(item=>item.field)),seen=new Set();
+  for(const {field,text} of edits) {
+    if(!allowed.has(field)||seen.has(field)||typeof text!=="string"||!text.trim())throw new Error("Языковая правка вышла за пределы выбранных фраз");
+    seen.add(field);
+    if(field.startsWith("map."))next[field.slice(4)]=text;
+    else if(field.startsWith("unresolvedQuestions."))next.unresolvedQuestions[Number(field.split(".")[1])]=text;
+    else {
+      const groups={area:next.areas,entity:next.entities,relation:next.relations,flow:next.keyFlows};
+      const scope=field.slice(0,field.indexOf(".")),key=field.slice(field.lastIndexOf(".")+1),id=field.slice(scope.length+1,field.lastIndexOf("."));
+      const item=groups[scope]?.find(item=>item.id===id);if(!item)throw new Error("Элемент языковой правки не найден");item[key]=text;
+    }
+  }
+  if(seen.size!==allowed.size)throw new Error("Исправлены не все выбранные фразы");
+  return next;
+}
+
+export function refinementFragment(value,review) {
+  const issues=(review.issues||[]).filter(issue=>issue.severity==="critical");
+  if(issues.some(issue=>issue.scope==="map"))return null;
+  const names={area:"areas",entity:"entities",relation:"relations",flow:"keyFlows"};
+  const fragment={};
+  for(const [scope,key] of Object.entries(names)){
+    const ids=new Set(issues.filter(issue=>issue.scope===scope).map(issue=>issue.id));
+    if(ids.size)fragment[key]=(value[key]||[]).filter(item=>ids.has(item.id));
+  }
+  return Object.keys(fragment).length?fragment:null;
+}
+
+export function mergeRefinementFragment(value,fragment,expected) {
+  const flowRelations=Boolean(expected.keyFlows&&!expected.relations);
+  if(Object.keys(fragment).some(key=>!Object.hasOwn(expected,key)&&!(flowRelations&&key==="relations")))throw new Error("Уточнение вышло за пределы выбранных объектов");
+  const next=structuredClone(value);
+  for(const key of Object.keys(expected)){
+    if(!Array.isArray(fragment[key])||!sameIds(expected[key],fragment[key],"id"))throw new Error("Уточнение изменило состав выбранных объектов");
+    const replacements=new Map(fragment[key].map(item=>{
+      if(key!=="keyFlows")return[item.id,item];
+      const original=value.keyFlows.find(flow=>flow.id===item.id);
+      const {transitionMode,...edit}=item;
+      if(transitionMode==="append")edit.transitions=[...(original.transitions||[]),...(edit.transitions||[])];
+      if(transitionMode==="conditions"){
+        const conditions=new Map(edit.transitions.map(item=>[item.relationId,item.condition]));
+        if([...conditions.keys()].some(id=>!original.transitions.some(item=>item.relationId===id)))throw new Error("Правка условия не может добавить переход");
+        edit.transitions=original.transitions.map(item=>conditions.has(item.relationId)?{...item,condition:conditions.get(item.relationId)}:item);
+      }
+      return[item.id,{...original,...edit}];
+    }));next[key]=next[key].map(item=>replacements.get(item.id)||item);
+  }
+  if(flowRelations&&fragment.relations?.length){
+    const used=new Set(next.keyFlows.filter(flow=>expected.keyFlows.some(item=>item.id===flow.id)).flatMap(flow=>(flow.transitions||[]).map(item=>item.relationId)));
+    const relevant=fragment.relations.filter(item=>used.has(item.id));
+    if(relevant.filter(item=>!value.relations.some(old=>old.id===item.id)).length>6)throw new Error("Слишком много новых связей для одной поправки");
+    const merged=new Map(next.relations.map(item=>[item.id,item]));for(const item of relevant)merged.set(item.id,item);next.relations=[...merged.values()];
+  }
+  const relations=new Map(next.relations.map(item=>[item.id,item]));
+  for(const flow of next.keyFlows||[])if(expected.keyFlows?.some(item=>item.id===flow.id)&&flow.transitions?.length){
+    const edges=flow.transitions.map(item=>relations.get(item.relationId));
+    if(edges.some(item=>!item)||edges.some((item,index)=>index>0&&edges[index-1].to!==item.from))throw new Error("Переходы сценария не соединяются в последовательный путь");
+    flow.steps=[edges[0].from,...edges.map(item=>item.to)];
+  }
+  return next;
+}
+
+function refinementFragmentSchema(fragment,value) {
+  const properties=Object.fromEntries(Object.entries(fragment).map(([key,items])=>{
+    const schema=structuredClone(ARCHITECT_OUTPUT_SCHEMA.properties[key]);schema.items.properties.id.enum=items.map(item=>item.id);
+    if(key==="keyFlows"){delete schema.items.properties.steps;schema.items.properties.transitionMode={type:"string",enum:["replace","append","conditions"]};schema.items.required=schema.items.required.filter(key=>key!=="steps").concat("transitionMode");}
+    return[key,schema];
+  }));
+  if(fragment.keyFlows&&!fragment.relations){properties.relations={...structuredClone(ARCHITECT_OUTPUT_SCHEMA.properties.relations),maxItems:6};for(const key of ["from","to"])properties.relations.items.properties[key].enum=value.entities.map(item=>item.id);}
+  return {type:"object",additionalProperties:false,properties,required:Object.keys(properties)};
+}
+
+function flowTextSchema(flow) {
+  return {type:"object",additionalProperties:false,properties:{title:{type:"string"},trigger:{type:"string"},outcome:{type:"string"},needsTopologyChange:{type:"boolean"},conditions:{type:"object",additionalProperties:false,properties:Object.fromEntries(flow.transitions.map(item=>[item.relationId,{type:"string"}])),required:flow.transitions.map(item=>item.relationId)}},required:["title","trigger","outcome","needsTopologyChange","conditions"]};
+}
+
+export function mergeFlowText(flow,edit) {
+  return {...flow,title:edit.title,trigger:edit.trigger,outcome:edit.outcome,transitions:flow.transitions.map(item=>({...item,condition:edit.conditions[item.relationId]}))};
 }
 
 function localReferenceCandidates(reference) {
@@ -194,9 +224,13 @@ export function architectureEvidenceIssues(value, root) {
   if (!root) return [];
   const issues = [];
   const check = (scope, id, reference) => {
+    if(String(reference).startsWith("dialog:")) {
+      try {readDialogSource(root,reference);} catch(error) {issues.push(`${scope}.${id}: ${error.message}`);}
+      return;
+    }
     if (!looksLikeLocalReference(String(reference || ""))) return;
-    const candidates = localReferenceCandidates(reference);
-    if (candidates.length && !candidates.some((candidate) => fs.existsSync(path.resolve(root, candidate)))) issues.push(`${scope}.${id} references missing evidence '${reference}'`);
+    const source=readCodeSource(root,String(reference).replace(/#L(\d+)(?:-L?(\d+))?$/,(_,first,last)=>":"+first+(last?"-"+last:"")));
+    if(source.error) issues.push(`${scope}.${id} references invalid evidence '${reference}': ${source.error}`);
   };
   for (const area of value.areas || []) for (const evidence of area.evidence || []) check("area", area.id, evidence);
   for (const entity of value.entities || []) {
@@ -244,30 +278,30 @@ export function validateReviewerDecision(value, review) {
   return review;
 }
 
-export function architectReviewPrompt(value, language) {
-  return `You are the independent owner-readability reviewer for Repo Canvas. You receive only the proposed map, with no repository access or hidden implementation context. Judge whether an intelligent project owner can understand the system from the map alone.
+export function architectReviewPrompt(value, language, readerProfile = {}) {
+  return `You review whether this project map helps its owner recover context. You receive only the map and reader profile, with no repository access. Do not use tools or infer undocumented implementation.
+Use ${language === "ru" ? "Russian" : language === "en" ? "English" : "the map's language"}.
+Reader profile: ${JSON.stringify(readerProfile)}
 
-Use ${language === "ru" ? "Russian" : language === "en" ? "English" : "the map's own language"}. Do not inspect files or run tools. Do not reward plausible jargon.
+Answer from the map:
+1. What is the product for, what goes in, and what useful result comes out?
+2. Which responsibilities/modules participate, and why do they exist?
+3. How does a principal function reach its result, including meaningful conditions and failures?
+The owner should also see what is implemented, planned or unknown.
 
-Pass only when all critical conditions hold:
-- projectSummary plainly says what the project does, for whom when relevant, what enters and what useful result leaves;
-- every area title and note identify one concrete responsibility and distinguish it from sibling areas;
-- no area is merely a technology layer, folder cluster, generic audience bucket or renamed end-to-end flow;
-- every parent entity is an evidenced subsystem responsibility around independently useful children, not a second area or decorative grouping box;
-- every normal entity names one project-owned responsibility and is a credible target for work, not a person, file, abstract outcome or whole end-to-end story;
-- every person is a concrete human role, sits outside areas, has a narrow purpose describing only its actions/inputs/decisions/expectations, and is connected by an explanatory relation;
-- no concept is duplicated as both a broad narrative node and its implementation boundary;
-- relation labels explain directed actions and keyFlows make important work traceable without forcing the map into a pipeline;
-- operational, disabled and planned concepts are understandable and not blended deceptively.
+A critical issue must prevent one of these tasks or create a materially wrong mental model: contradictory responsibilities/statuses, an unintelligible core module, a missing essential path, or genuinely duplicated functions presented as separate capabilities. Pass when these tasks are possible.
+Do not block a useful map over style preferences, optional detail or a preferred architecture school. An area may legitimately contain one module, including one planned capability. Similar area/module names at different zoom levels are not automatically duplicated functionality. Do not demand extra unsupported nodes to fill an area.
+Respect the graph contract: every non-person entity belongs to an area, parents are acyclic within an area, people stay outside areas, directed transitions use existing relations. Any recommendation must be possible within this contract. Consolidation means moving modules into an appropriate existing area, not detaching normal modules into empty areaId.
+Interpret ordinary wording in the owner's domain context. Technical spelling belongs in details; do not force it into clear product language. Potential wording improvements are warnings.
+For an owner explicitly using product/process framing, a principal explanation that requires understanding internal function names or mentally executing program code is a comprehension problem, not merely a style preference. Explain the result and causal role in their terms; official product names may remain unchanged.
+Give short, specific recommendations anchored to existing map ids; map-wide issues use id="map". passed=false requires at least one critical issue; warnings do not fail a map. Return the required JSON.
 
-Answer the three comprehension questions yourself, then report specific issues. For every issue, scope must name the object type and id must be the exact existing map id of that area, entity, relation or flow; use id="map" only for a project-wide thesis problem. Set passed=false whenever at least one critical issue exists. Return structured output only.
-
-Proposed map:
+Map:
 ${JSON.stringify(compactReviewMap(value))}`;
 }
 
 export function architectRefinementPrompt({ value, review, scopeError = "" }) {
-  return `Continue the same Repo Canvas Architect session. An independent Luna reviewer has inspected your candidate without repository access.
+  return `Continue the same Repo Canvas Architect session. An independent reviewer has inspected your candidate without repository access.
 
 Refine only the concrete fragments named by the review and the minimum adjacent relations/keyFlows needed to keep them coherent. Reuse the repository evidence already collected in this session. Do not inspect files, run tools, reread the repository or rebuild unrelated areas. You may split, merge, rename, add or remove entities inside an affected area when that is necessary to make one responsibility clear. Preserve every unaffected area, entity, relation, flow, id, color and wording exactly.
 
@@ -318,22 +352,23 @@ function retainedIds(snapshot, value) {
 export function architectureRepairSchema(value, snapshot) {
   const schema = structuredClone(ARCHITECT_OUTPUT_SCHEMA);
   const ids = retainedIds(snapshot, value);
-  const unique = (values) => [...new Set(values)];
-  const areaItem = schema.properties.areas.items.properties;
-  const entityItem = schema.properties.entities.items.properties;
-  const relationItem = schema.properties.relations.items.properties;
-  areaItem.id = { ...areaItem.id, enum: unique(value.areas.map((item) => item.id)) };
-  entityItem.id = { ...entityItem.id, enum: unique(value.entities.map((item) => item.id)) };
-  entityItem.areaId = { ...entityItem.areaId, enum: ["", ...ids.areaIds] };
-  entityItem.parentId = { ...entityItem.parentId, enum: ["", ...ids.entityIds] };
-  relationItem.id = { ...relationItem.id, enum: unique(value.relations.map((item) => item.id)) };
-  relationItem.from = { ...relationItem.from, enum: ids.entityIds };
-  relationItem.to = { ...relationItem.to, enum: ids.entityIds };
-  const steps = schema.properties.keyFlows.items.properties.steps;
-  steps.items = { ...steps.items, enum: ids.entityIds };
-  schema.properties.removedAreaIds.items = { ...schema.properties.removedAreaIds.items, enum: snapshot.areas.map((item) => item.id) };
-  schema.properties.removedEntityIds.items = { ...schema.properties.removedEntityIds.items, enum: snapshot.entities.map((item) => item.id) };
-  schema.properties.removedRelationIds.items = { ...schema.properties.removedRelationIds.items, enum: snapshot.relations.map((item) => item.id) };
+  const restrict=(array,values,field)=>{
+    const unique=[...new Set(values)];
+    if(!unique.length){array.maxItems=0;return;}
+    if(field)array.items.properties[field]={...array.items.properties[field],enum:unique};
+    else array.items={...array.items,enum:unique};
+  };
+  const {areas,entities,relations,keyFlows,removedAreaIds,removedEntityIds,removedRelationIds}=schema.properties;
+  restrict(areas,value.areas.map(item=>item.id),'id');
+  restrict(entities,value.entities.map(item=>item.id),'id');
+  restrict(entities,['',...ids.areaIds],'areaId');
+  restrict(entities,['',...ids.entityIds],'parentId');
+  restrict(relations,value.relations.map(item=>item.id),'id');
+  restrict(relations,ids.entityIds,'from');restrict(relations,ids.entityIds,'to');
+  restrict(keyFlows.items.properties.transitions,[...snapshot.relations.filter(item=>!(value.removedRelationIds||[]).includes(item.id)),...value.relations].map(item=>item.id),'relationId');
+  restrict(removedAreaIds,snapshot.areas.map(item=>item.id));
+  restrict(removedEntityIds,snapshot.entities.map(item=>item.id));
+  restrict(removedRelationIds,snapshot.relations.map(item=>item.id));
   return schema;
 }
 
@@ -442,8 +477,15 @@ export async function runArchitect({
   language: requestedLanguage = "",
   model,
   effort,
-  runner = runCodexStructured,
-  reviewer = runCodexStructured,
+  runner = runStructured,
+  reviewer = runStructured,
+  evidenceReviewer = runner === runStructured ? runStructured : null,
+  collectSources = runner === runStructured,
+  sourceOptions = {},
+  signal,
+  maxModelCalls,
+  maxModelTokens,
+  resumeCandidate = runner === runStructured,
   onProgress,
   maxRepairs = 3,
   maxReviewRepairs = 3,
@@ -451,12 +493,38 @@ export async function runArchitect({
 } = {}) {
   const audit = createArchitectAudit(root);
   const snapshot = getSnapshot();
+  if(snapshot.storeErrors?.length)throw new Error("Журнал проекта повреждён. Сначала выполните check и восстановление с резервной копией; модель не запускалась.");
   if (requestedLanguage && !normalizeLanguageTag(requestedLanguage)) throw new Error(`Invalid language tag '${requestedLanguage}'; use a BCP 47 tag such as ru, en or de-DE`);
-  const language = preferredMapLanguage(viewpoint, snapshot, repositoryLanguageSample(root), requestedLanguage);
-  const profile = {
-    model: model || MODEL_PROFILES.architect.model,
-    effort: effort || MODEL_PROFILES.architect.effort,
-  };
+  let language = preferredMapLanguage(viewpoint, snapshot, repositoryLanguageSample(root), requestedLanguage);
+  const runtime=readRuntimeConfig();
+  const callLimit=maxModelCalls ?? runtime.maxModelCalls ?? 14;
+  const tokenLimit=maxModelTokens ?? runtime.maxModelTokens ?? 300000;
+  let knowledge=snapshot.map?.knowledge || readProjectKnowledge(root);
+  let preparedSources=null;let verifiedSources=null;let evidenceReviews=0;let modules=null;
+  const revision=codeState(root);
+  const candidateFile=path.join(resolveDataDirectory(root),"architect-candidate.json");
+  const signature=crypto.createHash("sha256").update(JSON.stringify(repositoryFiles(root).map(file=>{const stat=fs.statSync(path.join(root,file));return [file,stat.size,stat.mtimeMs];}))).digest("hex");
+  let cached=null;
+  if(resumeCandidate) {try {cached=readSourceJson(candidateFile,null);}catch {/* a damaged candidate can be rebuilt */}}
+  const sourcePolicy=JSON.stringify({dialogSources:runtime.dialogSources!==false,providers:runtime.providers,excluded:runtime.excludedSourceFiles||[],aliases:runtime.projectAliases||[],sourceOptions});
+  if(cached?.sourcePolicy!==sourcePolicy)cached=null;
+  const baseSemanticSignature=semanticSignature(snapshot);
+  if(cached && ((cached.baseSemanticSignature?cached.baseSemanticSignature!==baseSemanticSignature:cached.baseRevision!==snapshot.revision) || cached.viewpoint!==viewpoint || cached.language!==language || cached.status==="applied")) cached=null;
+  const sourcesChanged=Boolean(cached&&cached.signature!==signature);
+  if(sourcesChanged){
+    cached.evidenceApproved=false;cached.verifiedSources=null;cached.preparedSources=sourcePackage(root,(cached.preparedSources?.sources||[]).map(source=>source.reference).filter(Boolean),{recoverRanges:true});
+    const refreshRange=reference=>{if(!/:\d+(?:[-:]\d+)?$/.test(reference||""))return reference;const current=readCodeSource(root,reference);if(!current.error)return reference;const file=reference.replace(/:\d+(?:[-:]\d+)?$/,"");return readCodeSource(root,file).text?file:reference;};
+    for(const item of [...cached.value.areas,...cached.value.entities,...cached.value.relations]){if(item.path)item.path=refreshRange(item.path);item.evidence=(item.evidence||[]).map(refreshRange);}
+  }
+  let evidenceApproved=Boolean(cached?.evidenceApproved);
+  let pendingReview=cached?.pendingReview?{value:cached.pendingReview}:null;let evidenceExtraRefs=cached?.evidenceExtraRefs||[];let evidenceReads=0;
+  let pendingEvidence=sourcesChanged?null:cached?.pendingEvidence||null;
+  let acceptedEvidence=sourcesChanged?[]:cached?.acceptedEvidence||[];
+  if(evidenceApproved) verifiedSources=cached.verifiedSources;
+  let lastVerified=cached?.evidenceApproved?{value:structuredClone(cached.value),sources:cached.verifiedSources}:null;
+  const saveCandidate=(value,approved=false,review=pendingReview?.value||null)=>{evidenceApproved=approved;if(approved)lastVerified={value:structuredClone(value),sources:structuredClone(verifiedSources)};if(resumeCandidate)writeSourceJson(candidateFile,{value,signature,sourcePolicy,auditRunId:audit.runId,baseRevision:snapshot.revision,baseSemanticSignature,viewpoint,language,knowledge:publicKnowledge(knowledge),preparedSources,verifiedSources:approved?verifiedSources:null,evidenceExtraRefs,pendingEvidence,acceptedEvidence,evidenceApproved:approved,pendingReview:review,status:"candidate",updatedAt:new Date().toISOString()});};
+  const profile = runner === runStructured ? selectModelProfile("architect",{profile:{model,effort}}) : {model:model||MODEL_PROFILES.architect.model,effort:effort||MODEL_PROFILES.architect.effort};
+  let activeArchitectProfile=profile;
   const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, totalTokens: 0 };
   const calls = [];
   let solSession = null;
@@ -465,19 +533,43 @@ export async function runArchitect({
   let repairs = 0;
   let acceptanceRepairs = 0;
   let semanticReviews = 0;
+  let languageRepairs = 0;
   let reviewWarnings = 0;
   const threadIds = [];
   const reviewThreadIds = [];
-  const summary = () => ({ runId: audit.runId, auditFile: audit.file, calls: calls.length, usage: { ...usage }, repairs, acceptanceRepairs, semanticReviews });
+  const summary = () => ({ runId: audit.runId, auditFile: audit.file, calls: calls.length, models:[...new Set(calls.map(call=>call.model).filter(Boolean))], usage: { ...usage }, repairs, acceptanceRepairs, semanticReviews });
   const callModel = async (callRunner, phase, options) => {
+    if(signal?.aborted) throw new Error("Построение отменено");
+    if(["initial","structural-repair","acceptance-refinement"].includes(phase))options={...options,prompt:options.prompt+`\nOwner-facing text remains in ${language}. Reader profile: ${JSON.stringify(knowledge.profile)}. Owner viewpoint: ${viewpoint}. Keep changed labels, purposes and flow outcomes concise and understandable from this viewpoint. A flow outcome states the product result in one short sentence; it is not a debugging trace. Put API paths, function names, storage fields and implementation vocabulary in technicalName/evidence or technical notes, not ordinary product explanations. Preserve precise behaviour and protected owner wording. Prefer 1–2 short sentences for purposes and at most three essential input/output/criterion items. Do not fill optional fields with exhaustive API fields, timers, limits or speculative requirements. Runtime components may own model calls and local orchestration; distinguish that capability from the model actor itself. Show causal responsibility flows at the owner's chosen level, with implementation details available through evidence.`};
+    if(callRunner===runStructured) {
+      const retry=phase==="acceptance-refinement"&&acceptanceRepairs>1 || (phase==="structural-repair" && repairs>1);
+      const complexity=taskComplexity(options.role,{promptChars:options.prompt?.length||0,retry});
+      const selected=selectModelProfile(options.role,{config:runtime,profile:options.role==="architect"?{model,effort}:undefined,complexity,contextTokens:Math.ceil((options.prompt?.length||0)/2)+16000});
+      selected.reason+=complexity==="hard" ? (retry?"; исправление проверенного противоречия":"; большой пакет источников") : "; обычный объём";
+      if(options.session && ["provider","model","effort"].some(key=>options.session.profile?.[key]!==selected[key])) {
+        await solSession.close(); solSession=await createProviderSession({cwd:root,profile:selected});
+        options={...options,session:solSession};
+      }
+      options={...options,profile:selected,complexity};
+    }
+    const promptText=options.prompt||"";const nonAscii=(promptText.match(/[^\x00-\x7f]/g)||[]).length;
+    const estimate=Math.ceil((promptText.length-nonAscii)/3.1+nonAscii/1.8)+16000+(options.session?.estimatedContextTokens||0);
+    if(calls.length>=callLimit || usage.totalTokens + estimate>tokenLimit) throw new Error("Достигнут предел расхода построения. Сохранённые знания доступны; увеличьте лимит или сузьте охват.");
     const index = calls.length + 1; const startedAt = new Date().toISOString(); const started = Date.now();
     try {
-      const response = await callRunner(options);
+      const visiblePhase = phase === "source-selection" ? "sources" : phase === "structural-repair" ? "repairing" : phase === "acceptance-refinement" ? "refining" : options.role === "historian" ? "knowledge" : options.role === "architect" ? "building" : options.role === "reviewer" ? "reviewing" : "evidence";
+      const progress = event => onProgress?.({...event, phase: visiblePhase, model: options.profile?.model || null, call: index});
+      progress({eventType:"process.requested",at:startedAt});
+      const response = await callRunner({...options,usageRoot:root,signal,onProgress:progress});
+      if(options.role==="architect") {activeArchitectProfile=response.profile||options.profile||activeArchitectProfile;if(response.threadId)threadIds.push(response.threadId);}
       const callUsage = normalizeUsage(response.usage);
+      if(!response.usage){callUsage.inputTokens=estimate;callUsage.totalTokens=estimate;callUsage.estimated=true;}
+      if(options.session)options.session.estimatedContextTokens=callUsage.inputTokens+callUsage.outputTokens;
       addUsage(usage, callUsage);
       const record = {
         index, phase, role: options.role, model: response.profile?.model || options.profile?.model || MODEL_PROFILES[options.role]?.model,
         effort: response.profile?.effort || options.profile?.effort || MODEL_PROFILES[options.role]?.effort,
+        provider:response.provider||response.profile?.provider||options.profile?.provider||null,selectionReason:response.profile?.reason||options.profile?.reason||null,
         threadId: response.threadId || null, resumed: response.resumed === true,
         startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - started, usage: callUsage,
       };
@@ -492,15 +584,33 @@ export async function runArchitect({
   try {
     solSession = sessionFactory
       ? await sessionFactory({ cwd: root, profile })
-      : runner === runCodexStructured
+      : runner === runStructured
+        ? await createProviderSession({cwd:root,profile})
+        : runner === runCodexStructured
         ? await createCodexStructuredSession({ cwd: root, profile })
         : { cwd: root, profile, threadId: null, turns: 0, closed: false, close: async () => {} };
-    result = await callModel(runner, "initial", {
+    if(cached) {knowledge=cached.knowledge;preparedSources=cached.preparedSources;value=cached.value;result={value,profile,provider:profile.provider};}
+    if(collectSources && !cached) {
+      const collected=await collectProjectKnowledge(root,{
+        language,ownerInstructions:viewpoint,signal,onProgress,
+        sourceOptions:{providers:runtime.providers,enabled:runtime.dialogSources!==false,excludeFiles:runtime.excludedSourceFiles||[],projectAliases:runtime.projectAliases||[],...sourceOptions},
+        maxBatches:Math.max(0,Math.min(4,callLimit-5)),
+        call:options=>usage.totalTokens + Math.ceil(options.prompt.length/2) + 8000 > Math.min(tokenLimit*.2,36000) ? null : callModel(runner,"knowledge",options),
+      });
+      knowledge=collected.knowledge;
+      if(!requestedLanguage && !viewpoint && normalizeLanguageTag(knowledge.profile?.language)) language=normalizeLanguageTag(knowledge.profile.language);
+      onProgress?.({phase:"sources",detail:"Сопоставляем изменённые модули и прямые импорты"});
+      modules=buildModuleCards(root);
+      modules=await enrichModuleCards(root,modules,options=>usage.totalTokens+Math.ceil(options.prompt.length/2)+8000>tokenLimit*.2?null:callModel(reviewer,"module-cards",options));
+      preparedSources=sourcePackage(root,selectInitialReferences(root,modules,snapshot),{recoverRanges:true,compact:true,expandWholeFiles:false,maxChars:45000,maxSourceChars:8000});
+    }
+    if(!cached) result = await callModel(runner, "initial", {
       role: "architect", cwd: root, session: solSession, profile,
-      prompt: architectPrompt({ snapshot, refresh, viewpoint, language }), outputSchema: ARCHITECT_OUTPUT_SCHEMA,
+      prompt: architectPrompt({ snapshot, refresh, viewpoint, language }) + `\nReader profile, intent and decisions: ${JSON.stringify(publicKnowledge(knowledge))}\nUse this reader framing and vocabulary for titles and explanations. Preserve original technical identifiers in technicalName and code references; never change facts for the reader.\nCached module hints and static import candidates (not proof of behaviour): ${JSON.stringify(modules?moduleContext(modules):null)}\nOriginal source package: ${JSON.stringify(preparedSources)}`, outputSchema: ARCHITECT_OUTPUT_SCHEMA,
       onProgress: (progress) => onProgress?.({ ...progress, attempt: 0 }),
     });
-    value = result.value;
+    value = applyKnownVocabulary(normalizeArchitecture(result.value,snapshot),language,knowledge.profile);
+    saveCandidate(value,evidenceApproved);
     if (result.threadId) threadIds.push(result.threadId);
 
     while (true) {
@@ -511,10 +621,17 @@ export async function runArchitect({
           try {
             onProgress?.({ phase: "validating", attempt: repairs + acceptanceRepairs, at: new Date().toISOString() });
             validateArchitecture(value, snapshot);
-            validateArchitectureLanguage(value, language);
+            const wording=languageRepairFields(value,language,knowledge.profile);
+            if(wording.length&&languageRepairs<2) {
+              const edited=await callModel(reviewer,"language-repair",{role:"reviewer",cwd:root,prompt:`Edit only these phrases into clear ${language} for the project owner. Keep meaning and actual product/technology names; translate generic jargon INCLUDING former node titles. For example, 'прежнего Runtime bootstrap' should be 'прежнего блока запуска'. Never preserve a rejected English phrase merely because it is capitalized. Return each field exactly once. Do not add facts. Rejected wording: ${JSON.stringify(architectureLanguageIssues(value,language,knowledge.profile))}. Phrases: ${JSON.stringify(wording)}`,outputSchema:{type:"object",additionalProperties:false,properties:{edits:{type:"array",items:{type:"object",additionalProperties:false,properties:{field:{type:"string",enum:wording.map(item=>item.field)},text:{type:"string"}},required:["field","text"]}}},required:["edits"]}});
+              value=applyLanguageRepair(value,edited.value.edits,wording);languageRepairs++;saveCandidate(value);
+              continue;
+            }
+            if(wording.length){const error=new Error("Не удалось исправить язык пояснений. Подготовленная карта сохранена для следующей попытки.");error.code="LANGUAGE_REPAIR_FAILED";throw error;}
+            validateArchitectureLanguage(value, language, knowledge.profile);
             validateArchitectureEvidence(value, root);
             break;
-          } catch (caught) { validationError = caught; }
+          } catch (caught) { if(caught.code==="LANGUAGE_REPAIR_FAILED"||/предел расхода|timed out|aborted/i.test(caught.message))throw caught;validationError = caught; }
         }
         audit.append("validation.rejected", { attempt: repairs + 1, error: validationError.message });
         if (repairs >= maxRepairs) throw new Error(`Architect could not produce a valid map after ${repairs} focused structural repairs: ${validationError.message}`);
@@ -522,24 +639,41 @@ export async function runArchitect({
         onProgress?.({ phase: "repairing", attempt: repairs + acceptanceRepairs, detail: validationError.message, at: new Date().toISOString() });
         const repaired = await callModel(runner, "structural-repair", {
           role: "architect", cwd: root, session: solSession,
-          prompt: architectRepairPrompt({ value, snapshot, error: validationError, language }),
+          prompt: architectRepairPrompt({ value, snapshot, error: validationError, language }) + `\nOriginal sources and reader context: ${JSON.stringify({sources:preparedSources,knowledge:publicKnowledge(knowledge)})}`,
           outputSchema: architectureRepairSchema(value, snapshot), timeoutMs: 8 * 60_000, profile,
           onProgress: (progress) => onProgress?.({ ...progress, phase: progress.phase === "starting" ? "repairing" : progress.phase, attempt: repairs + acceptanceRepairs }),
         });
-        try { assertRepairScope(value, repaired.value); value = repaired.value; }
+        try { const candidate=normalizeArchitecture(repaired.value,snapshot); validateArchitecture(candidate,snapshot); assertRepairScope(value,candidate); value=candidate;pendingEvidence=null;acceptedEvidence=[]; saveCandidate(value); }
         catch (scopeError) { pendingError = scopeError; }
       }
 
-      const reviewDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-review-"));
-      let reviewed;
-      try {
-        onProgress?.({ phase: "reviewing", attempt: repairs + acceptanceRepairs, at: new Date().toISOString() });
-        reviewed = await callModel(reviewer, "owner-review", {
-          role: "reviewer", cwd: reviewDirectory,
-          prompt: architectReviewPrompt(value, language), outputSchema: architectureReviewSchema(value), timeoutMs: 3 * 60_000,
-          onProgress: (progress) => onProgress?.({ ...progress, phase: "reviewing", attempt: repairs + acceptanceRepairs }),
-        });
-      } finally { fs.rmSync(reviewDirectory, { recursive: true, force: true }); }
+      let reviewed=pendingReview;pendingReview=null;
+      if(evidenceReviewer && !evidenceApproved && !reviewed) {
+        if(pendingEvidence)assertEvidenceUnchanged(root,{sources:acceptedEvidence});
+        const reviewValue=pendingEvidence?focusEvidenceMap(value,pendingEvidence.issues.filter(issue=>issue.severity==="critical")):value;
+        verifiedSources=evidencePackage(root,reviewValue,{extraRefs:[...(pendingEvidence?.sourceRequests||evidenceExtraRefs),...(!pendingEvidence?[...(knowledge.intentSourceIds||[]),...(knowledge.decisions||[]).flatMap(item=>item.sourceIds||[])]:[])]});
+        if(sourcesChanged){const known=new Set(verifiedSources.sources.map(source=>source.reference));let chars=verifiedSources.sources.reduce((sum,source)=>sum+(source.text?.length||0),0);for(const source of preparedSources?.sources||[])if(source.text&&!known.has(source.reference)&&chars+source.text.length<=140000){verifiedSources.sources.push(source);chars+=source.text.length;known.add(source.reference);}}
+        onProgress?.({phase:"evidence",attempt:repairs+acceptanceRepairs,detail:"Сверяем утверждения с исходниками"});
+        const checked=await callModel(evidenceReviewer,"evidence-review",{role:"verifier",cwd:root,prompt:evidenceReviewPrompt(reviewValue,verifiedSources,pendingEvidence?{profile:knowledge.profile,coverage:knowledge.coverage,ownerViewpoint:viewpoint}:{...publicKnowledge(knowledge),ownerViewpoint:viewpoint})+(pendingEvidence?`\nContinuation of the same verification on unchanged sources. Other claims were accepted in the previous pass. Resolve only these remaining issues using the requested excerpts; do not reopen unrelated components or expand scope: ${JSON.stringify(pendingEvidence.issues.filter(issue=>issue.severity==="critical"))}`:sourcesChanged?"\nThis candidate predates source changes. Recheck its claims against current source excerpts. Report changed contracts within the owner's scope; do not expand that scope.":""),outputSchema:EVIDENCE_REVIEW_SCHEMA,timeoutMs:5*60_000});
+        audit.append("evidence.completed",checked.value);
+        evidenceReviews++;
+        const requested=(checked.value.sourceRequests||[]).filter(reference=>!evidenceExtraRefs.includes(reference)).slice(0,6);
+        if(requested.length&&evidenceReads<2&&(!checked.value.passed||checked.value.issues.some(issue=>issue.severity!=="warning"))){acceptedEvidence=[...new Map([...acceptedEvidence,...verifiedSources.sources].map(source=>[source.reference||source.id,source])).values()];pendingEvidence=checked.value.issues.some(issue=>issue.severity==="critical")?checked.value:null;evidenceExtraRefs=[...new Set([...requested,...evidenceExtraRefs])].slice(0,64);evidenceReads++;onProgress?.({phase:"sources",detail:"Дочитываем конкретные основания перед проверкой"});saveCandidate(value,false);continue;}
+
+        if(checked.value.passed && !checked.value.issues.some(issue=>issue.severity!=="warning")){verifiedSources={...verifiedSources,sources:[...new Map([...acceptedEvidence,...verifiedSources.sources].map(source=>[source.reference||source.id,source])).values()]};pendingEvidence=null;saveCandidate(value,true);}
+        if(!checked.value.passed || checked.value.issues.some(issue=>issue.severity!=="warning")) reviewed={...checked,value:{passed:false,summary:checked.value.summary,answers:{project:"",composition:"",lifecycle:""},issues:checked.value.issues.filter(issue=>issue.severity!=="warning").map(issue=>({...issue,severity:"critical"}))}};
+      }
+      if(!reviewed) {
+        const reviewDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "repo-canvas-review-"));
+        try {
+          onProgress?.({ phase: "reviewing", attempt: repairs + acceptanceRepairs, at: new Date().toISOString() });
+          reviewed = await callModel(reviewer, "owner-review", {
+            role: "reviewer", cwd: reviewDirectory,
+            prompt: architectReviewPrompt(value, language, {...knowledge.profile,explicitInstructions:[...(knowledge.profile.explicitInstructions||[]),...(viewpoint?[viewpoint]:[])]}), outputSchema: architectureReviewSchema(value), timeoutMs:3*60_000,
+            onProgress: progress=>onProgress?.({...progress,phase:"reviewing",attempt:repairs+acceptanceRepairs}),
+          });
+        } finally {fs.rmSync(reviewDirectory,{recursive:true,force:true});}
+      }
       semanticReviews += 1;
       validateReviewerDecision(value, reviewed.value);
       if (reviewed.threadId) reviewThreadIds.push(reviewed.threadId);
@@ -547,23 +681,35 @@ export async function runArchitect({
       reviewWarnings = (reviewed.value.issues || []).filter((issue) => issue.severity === "warning").length;
       audit.append("review.completed", { review: semanticReviews, passed: reviewed.value.passed, summary: reviewed.value.summary, answers: reviewed.value.answers, issues: reviewed.value.issues });
       if (reviewed.value.passed && !critical.length) break;
+      pendingReview=reviewed;saveCandidate(value,evidenceApproved);pendingReview=null;
       if (acceptanceRepairs >= maxReviewRepairs) {
         const detail = critical.map((issue) => `${issue.scope}.${issue.id}: ${issue.message}`).join("; ") || reviewed.value.summary;
         throw new Error(`Owner-readability review rejected the map after ${semanticReviews} review(s) and ${acceptanceRepairs} focused refinements: ${detail}`);
       }
 
       const baseline = value; let scopeError = "";
+      const issueIds=new Set((reviewed.value.issues||[]).map(issue=>issue.id));
+      const issueEntities=new Set(value.keyFlows.filter(flow=>issueIds.has(flow.id)).flatMap(flow=>flow.steps||[]));
+      const affected=[...value.areas,...value.entities,...value.relations].filter(item=>issueIds.has("map")||issueIds.has(item.id)||issueEntities.has(item.id));
+      const mentioned=(reviewed.value.issues||[]).flatMap(issue=>[...(issue.message+" "+issue.recommendation).matchAll(/[\w./-]+\.(?:[cm]?jsx?|tsx?|py|md)(?::\d+(?:-\d+)?)?/g)].map(match=>match[0]));
+      const fragment=refinementFragment(baseline,reviewed.value);
+      const textFlow=fragment&&Object.keys(fragment).length===1&&fragment.keyFlows?.length===1&&new Set(fragment.keyFlows[0].transitions?.map(item=>item.relationId)).size===fragment.keyFlows[0].transitions?.length?fragment.keyFlows[0]:null;
+      let requireTopologyChange=reviewed.value.topologyChangeRequested===true;
+      const preciseMentioned=mentioned.map(reference=>{if(readCodeSource(root,reference).text)return reference;const [name,...range]=reference.split(":");const matches=repositoryFiles(root).filter(file=>file===name||file.endsWith("/"+name));return matches.length===1?matches[0]+(range.length?":"+range.join(":"):""):reference;});
+      const refinementSources=sourcePackage(root,[...new Set([...preciseMentioned,...affected.flatMap(item=>[item.path,...(item.evidence||[])])].filter(Boolean))],{maxChars:fragment?40000:120000,maxSourceChars:fragment?12000:180000,compact:true,expandWholeFiles:!fragment,recoverRanges:true});
       while (true) {
         if (acceptanceRepairs >= maxReviewRepairs) throw new Error(`Architect exceeded ${maxReviewRepairs} focused acceptance refinements: ${scopeError || reviewed.value.summary}`);
         acceptanceRepairs += 1;
         onProgress?.({ phase: "refining", attempt: repairs + acceptanceRepairs, detail: reviewed.value.summary, at: new Date().toISOString() });
         const refined = await callModel(runner, "acceptance-refinement", {
-          role: "architect", cwd: root, session: solSession, profile,
-          prompt: architectRefinementPrompt({ value: baseline, review: reviewed.value, scopeError }), outputSchema: ARCHITECT_OUTPUT_SCHEMA,
+          role: "architect", cwd: root, profile,
+          prompt: (textFlow&&!requireTopologyChange?`Correct the wording and transition conditions of this existing flow in clear ${language}. The code retains its steps and relation IDs; return a condition for each supplied relation ID. Preserve unaffected text and facts. Set needsTopologyChange=false when the review can be resolved by correcting conditions or wording. Set it true only if fixing an incorrect path actually requires different steps or relations. Review: ${JSON.stringify(reviewed.value)}. Flow: ${JSON.stringify(textFlow)}`:fragment?`Correct only the supplied map objects to resolve the review. Preserve their IDs and all unaffected facts. Return complete objects in these arrays; do not reconstruct other parts of the map. For flows explicitly select transitionMode: append to add the missing tail after the existing final node; conditions to edit only existing conditions; replace only when you supply the ENTIRE ordered path from its beginning to its final result. Append must include every remaining connecting edge needed to reach the result, including existing relations, not just a newly added edge. Preserve the original prefix when completing an unfinished journey. The program derives steps from relation endpoints, so do not output steps or use a flow ID as a component. You may return up to six new or corrected relations needed by these transitions between EXISTING component IDs; include evidence and preserve unrelated relations. Return an empty relations array when no new edge is necessary. Keep clear ${language} wording. Review: ${JSON.stringify(reviewed.value)}. Objects: ${JSON.stringify(fragment)}. Read-only component IDs: ${JSON.stringify(baseline.entities.map(({id,label})=>({id,label})))}. Read-only connections: ${JSON.stringify(baseline.relations.map(({id,from,to,label,status})=>({id,from,to,label,status})))}. Previous error: ${scopeError}`:architectRefinementPrompt({ value: baseline, review: reviewed.value, scopeError })) + `\nCurrent sources for the reviewed fragment and reader context: ${JSON.stringify({sources:refinementSources,profile:knowledge.profile})}`, outputSchema: textFlow&&!requireTopologyChange?flowTextSchema(textFlow):fragment?refinementFragmentSchema(fragment,baseline):ARCHITECT_OUTPUT_SCHEMA,
           timeoutMs: 8 * 60_000,
           onProgress: (progress) => onProgress?.({ ...progress, phase: progress.phase === "starting" ? "refining" : progress.phase, attempt: repairs + acceptanceRepairs }),
         });
-        try { assertReviewRepairScope(baseline, refined.value, reviewed.value); value = refined.value; break; }
+        if(textFlow&&!requireTopologyChange&&refined.value.needsTopologyChange){requireTopologyChange=true;reviewed.value={...reviewed.value,topologyChangeRequested:true};acceptanceRepairs--;saveCandidate(baseline,evidenceApproved,reviewed.value);continue;}
+        const edited=textFlow&&!requireTopologyChange?{keyFlows:[mergeFlowText(textFlow,refined.value)]}:refined.value;
+        try { const candidate=normalizeArchitecture(fragment?mergeRefinementFragment(baseline,edited,fragment):edited,snapshot); validateArchitecture(candidate,snapshot); assertReviewRepairScope(baseline,candidate,reviewed.value); value=candidate;pendingEvidence={...reviewed.value,sourceRequests:preciseMentioned};acceptedEvidence=[...new Map([...acceptedEvidence,...(verifiedSources?.sources||[])].map(source=>[source.reference||source.id,source])).values()]; saveCandidate(value); break; }
         catch (scopeFailure) {
           scopeError = scopeFailure.message;
           audit.append("refinement.scope-rejected", { attempt: acceptanceRepairs, error: scopeError, issues: reviewed.value.issues });
@@ -571,21 +717,34 @@ export async function runArchitect({
       }
     }
     onProgress?.({ phase: "applying", attempt: repairs + acceptanceRepairs, at: new Date().toISOString() });
-    const applied = applyArchitecture(value, { actor: "architect", refresh, language });
+    if(verifiedSources) assertEvidenceUnchanged(root,verifiedSources);
+    archiveEvidence(root,verifiedSources);
+    const verification=evidenceReviewer?{state:"source-checked",at:new Date().toISOString(),code:revision,sourceHashes:(verifiedSources?.sources||[]).filter(source=>source.hash).map(({reference,hash})=>({reference,hash})),testStatus:"not-executed"}:undefined;
+    const applied = applyArchitecture(value, { actor:"architect",refresh,language,knowledge:publicKnowledge(knowledge),verification,expectedSignature:baseSemanticSignature });
     const output = {
-      provider: "codex", model: result.profile?.model || profile.model, effort: result.profile?.effort || profile.effort,
+      provider: activeArchitectProfile.provider || result.provider || profile.provider || "codex", model: activeArchitectProfile.model, effort: activeArchitectProfile.effort,
       threadId: result.threadId, threadIds: [...new Set(threadIds)], reviewThreadIds: [...new Set(reviewThreadIds)],
       projectTitle: value.projectTitle, areas: value.areas.length, entities: value.entities.length, relations: value.relations.length,
-      repairs, acceptanceRepairs, semanticReviews, semanticRegenerations: 0, reviewWarnings,
-      calls: calls.length, usage: { ...usage }, auditRunId: audit.runId, auditFile: audit.file,
+      repairs, acceptanceRepairs, semanticReviews, evidenceReviews, semanticRegenerations: 0, reviewWarnings, coverage:knowledge.coverage || null,
+      calls: calls.length, models:[...new Set(calls.map(call=>call.model).filter(Boolean))], usage: { ...usage }, auditRunId: audit.runId, auditFile: audit.file,
       events: applied.events, revision: applied.snapshot.revision,
     };
+    if(resumeCandidate) writeSourceJson(candidateFile,{status:"applied",revision:output.revision,updatedAt:new Date().toISOString()});
     audit.append("run.completed", output);
     return output;
   } catch (error) {
     const failure = summary();
+    if(!signal?.aborted&&lastVerified&&evidenceReviewer&&/предел расхода|Owner-readability review rejected/.test(error.message)) {
+      try {
+        assertEvidenceUnchanged(root,lastVerified.sources);validateArchitecture(lastVerified.value,snapshot);
+        archiveEvidence(root,lastVerified.sources);
+        const partial=applyArchitecture(lastVerified.value,{actor:"architect",refresh,language,knowledge:publicKnowledge(knowledge),verification:{state:"source-checked",readability:"needs-review",reason:"Факты подтверждены. Проверка понятности ещё не завершена.",at:new Date().toISOString(),code:revision,testStatus:"not-executed"},expectedSignature:baseSemanticSignature});
+        if(resumeCandidate)writeSourceJson(candidateFile,{value:lastVerified.value,signature,sourcePolicy,auditRunId:audit.runId,baseRevision:partial.snapshot.revision,baseSemanticSignature:semanticSignature(partial.snapshot),viewpoint,language,knowledge:publicKnowledge(knowledge),preparedSources,verifiedSources:lastVerified.sources,evidenceExtraRefs:[],pendingEvidence:null,acceptedEvidence:[],evidenceApproved:true,pendingReview:pendingReview?.value||null,status:"candidate",updatedAt:new Date().toISOString()});
+        const output={...failure,outcome:"partial",verified:true,canResume:true,revision:partial.snapshot.revision,events:partial.events};audit.append("run.partial",output);return output;
+      } catch(partialError) {audit.append("partial.rejected",{reason:partialError.message});}
+    }
     audit.append("run.failed", { ...failure, error: String(error?.message || error).slice(0, 2000) });
-    error.audit = failure;
+    error.audit = {...failure,canResume:Boolean(value&&resumeCandidate)};
     throw error;
   } finally {
     await solSession?.close?.();

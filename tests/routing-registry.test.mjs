@@ -87,10 +87,10 @@ test("registry keeps one session per scope and uses incremental settles without 
   await registry.replace([scopeAt()]);
   for (let index = 0; index < 100; index += 1) {
     const routes = await registry.settle([{ id: "entity:a", x: index * 2, y: index }]);
-    assert.equal(routes.length, 1);
+    assert.equal(routes.length, index===0?0:1);
   }
   assert.deepEqual(registry.stats(), {
-    created: 1, destroyed: 0, rebuilds: 0, transactions: 100, fallbacks: 0, active: 1,
+    created: 1, destroyed: 0, rebuilds: 0, transactions: 99, fallbacks: 0, active: 1,
   });
   registry.destroy();
   assert.equal(registry.stats().active, 0);
@@ -153,4 +153,18 @@ test("real libavoid session preserves complete orthogonal routes after an increm
   }
   assert.equal(registry.stats().rebuilds, 0);
   registry.destroy();
+});
+test("restoring saved routes does not start a routing transaction until an affected drag",async()=>{
+  let builds=0;
+  const registry=new RoutingRegistry({createSession:async()=>{builds++;throw new Error("fixture fallback");},routeOnce:async()=>[]});
+  registry.restore([{id:"untouched",edges:[{id:"r"}],graph:{children:[],edges:[]},boxes:[],nodeIds:new Set()}],[{id:"r",points:[]}]);
+  assert.equal(builds,0);assert.equal(registry.routes().length,1);registry.destroy();assert.equal(registry.stats().active,0);
+});
+test("a restored graph routes connections together so neighbours retain their clearance",async()=>{
+  const counters={created:0,destroyed:0,transactions:0};const scope=scopeAt({withSecondEdge:true});const saved=routesFromRoutingResults(scope,resultMap(scope));
+  const registry=new RoutingRegistry({createSession:fakeFactory(counters),routeOnce:async value=>routesFromRoutingResults(value,resultMap(value))});registry.restore([scope],saved);
+  const changed=await registry.settle([{id:"entity:a",x:10,y:20}]);assert.deepEqual(changed.map(route=>route.id),["edge:ab","edge:bc"]);
+  assert.equal(registry.routes().length,2);assert.equal(counters.created,1);assert.equal(registry.stats().active,1);
+  assert.equal((await registry.settle([{id:"entity:a",x:10,y:20}])).length,0);
+  registry.restore([scope],saved.slice(0,1));assert.deepEqual((await registry.settle([])).map(route=>route.id),["edge:ab","edge:bc"]);registry.destroy();assert.equal(counters.created,counters.destroyed);
 });

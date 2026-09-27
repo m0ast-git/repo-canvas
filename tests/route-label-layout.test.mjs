@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { placeRouteLabels, rectanglesOverlap, routeLabelScale } from "../client/src/route-label-layout.js";
+import { placeRouteLabels, rectanglesOverlap, routeLabelScale, ROUTE_LABEL_FONT_SIZE } from "../client/src/route-label-layout.js";
 
 function placementBox(placement) {
   return {
@@ -12,10 +12,13 @@ function placementBox(placement) {
   };
 }
 
-test("route labels remain bounded at distant zoom", () => {
-  assert.equal(routeLabelScale(.05), 1.45);
-  assert.equal(routeLabelScale(.5), 1.45);
-  assert.equal(routeLabelScale(1.4), 1);
+test("relationship text stays subordinate to the elements it connects", () => {
+  assert.equal(ROUTE_LABEL_FONT_SIZE*routeLabelScale(.05,true)*.05, 12);
+  for(const zoom of [.05,.2,.5,1,1.4,2]) {
+    const caption=ROUTE_LABEL_FONT_SIZE*routeLabelScale(zoom)*zoom;
+    assert.ok(caption<=15*zoom,"Caption exceeds node body text");
+    assert.ok(caption<=18*zoom*.75,"Caption approaches the node heading");
+  }
 });
 
 test("route labels avoid visible nodes and each other", () => {
@@ -34,8 +37,8 @@ test("route labels avoid visible nodes and each other", () => {
   assert.equal(rectanglesOverlap(placementBox(first), placementBox(second), 10), false);
 });
 
-test("an unsafe fallback remains hover-only instead of pretending it is collision-free", () => {
+test("no caption is placed over occupied space, including pinned or hovered routes", () => {
   const route = { id: "blocked", label: "передаёт результат", points: [{ x: 20, y: 100 }, { x: 480, y: 100 }] };
   const placements = placeRouteLabels([route], { x: 0, y: 0, zoom: 1 }, { width: 500, height: 220 }, [{ x: 0, y: 0, width: 500, height: 220 }]);
-  assert.equal(placements.get("blocked").safe, false);
+  assert.equal(placements.has("blocked"), false);
 });

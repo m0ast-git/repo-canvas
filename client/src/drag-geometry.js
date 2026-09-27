@@ -1,4 +1,6 @@
-export const DROP_GAP = 76;
+import { AREA_HEADER_HEIGHT } from "./node-geometry.js";
+
+export const DROP_GAP = 24;
 export const MAGNET_SCREEN_PX = 6;
 export const CAPTURE_RATIO = .18;
 export const RELEASE_RATIO = .08;
@@ -89,10 +91,11 @@ export function pickDropContainer(movedBounds, containers, previousId = null) {
     ...container,
     ratio: overlapRatio(movedBounds, container.rect),
   })).filter((container) => container.ratio > 0)
-    .sort((a, b) => b.ratio - a.ratio || Number(b.depth || 0) - Number(a.depth || 0) || a.id.localeCompare(b.id));
+    .sort((a, b) => Number(b.depth ?? -1) - Number(a.depth ?? -1) || b.ratio - a.ratio || a.id.localeCompare(b.id));
   const previous = previousId ? scored.find((container) => container.id === previousId) : null;
-  if (previous && previous.ratio >= RELEASE_RATIO) return previous;
-  return scored.find((container) => container.ratio >= CAPTURE_RATIO) || null;
+  const captured = scored.find((container) => container.ratio >= CAPTURE_RATIO);
+  if (previous && previous.ratio >= RELEASE_RATIO && (!captured || (previous.depth ?? -1) >= (captured.depth ?? -1))) return previous;
+  return captured || null;
 }
 
 export function expandedRect(rect, gap) {
@@ -114,7 +117,6 @@ export function nearestFreeTranslation(sourceBounds, desiredTranslation, obstacl
   if (!obstacles.length) return { ...desiredTranslation, adjusted: false };
   const desired = { x: sourceBounds.x + desiredTranslation.dx, y: sourceBounds.y + desiredTranslation.dy };
   const queue = [{ ...desired, distance: 0 }]; const visited = new Set();
-  let best = { ...desired, score: Number.POSITIVE_INFINITY, distance: 0 };
   let attempts = 0;
   while (queue.length && attempts < 1200) {
     queue.sort((a, b) => a.distance - b.distance);
@@ -122,8 +124,6 @@ export function nearestFreeTranslation(sourceBounds, desiredTranslation, obstacl
     if (visited.has(key)) continue;
     visited.add(key); attempts += 1;
     const rect = { ...sourceBounds, x: candidate.x, y: candidate.y };
-    const score = obstacles.reduce((total, obstacle) => total + intersectionArea(rect, expandedRect(obstacle, gap)), 0);
-    if (score < best.score || score === best.score && candidate.distance < best.distance) best = { ...candidate, score };
     const collision = collidingObstacle(rect, obstacles, gap);
     if (!collision) {
       return {
@@ -143,18 +143,19 @@ export function nearestFreeTranslation(sourceBounds, desiredTranslation, obstacl
       queue.push({ ...position, distance: dx * dx + dy * dy });
     }
   }
-  return {
-    dx: best.x - sourceBounds.x,
-    dy: best.y - sourceBounds.y,
-    adjusted: Math.abs(best.x - desired.x) > .01 || Math.abs(best.y - desired.y) > .01,
-    unresolved: best.score > 0,
-  };
+  const exits=[
+    {x:Math.min(...obstacles.map(rect=>rect.x))-gap-sourceBounds.width,y:desired.y},
+    {x:Math.max(...obstacles.map(rect=>rect.x+rect.width))+gap,y:desired.y},
+    {x:desired.x,y:Math.min(...obstacles.map(rect=>rect.y))-gap-sourceBounds.height},
+    {x:desired.x,y:Math.max(...obstacles.map(rect=>rect.y+rect.height))+gap},
+  ].sort((a,b)=>Math.hypot(a.x-desired.x,a.y-desired.y)-Math.hypot(b.x-desired.x,b.y-desired.y));
+  return {dx:exits[0].x-sourceBounds.x,dy:exits[0].y-sourceBounds.y,adjusted:true,unresolved:false};
 }
 
 export function dropObstacle(node) {
   if (node.type === "area") {
     const rect = nodeRect(node);
-    return { x: rect.x + 18, y: rect.y + 14, width: Math.max(0, Math.min(560, rect.width - 36)), height: 130 };
+    return { x: rect.x + 18, y: rect.y + 14, width: Math.max(0, rect.width - 36), height: AREA_HEADER_HEIGHT - 20 };
   }
   if (node.type === "group") return groupHeaderRect(node);
   return nodeRect(node);

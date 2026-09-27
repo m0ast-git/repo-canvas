@@ -22,6 +22,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: npm run test:review
+      - run: npm run build
       - run: 'node -e "require(''node:fs'').mkdirSync(''dist'', { recursive: true })"'
       - run: npm pack --pack-destination dist
       - run: npm run test:package

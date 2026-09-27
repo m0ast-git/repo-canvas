@@ -1,12 +1,16 @@
+import {promptTemplate} from "./prompt-template.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
 import { appendEvent, createEvent, getSnapshot } from "./canvas-store.mjs";
 import { readAppendedRecords } from "./codex-sessions.mjs";
-import { runCodexStructured } from "./model-runtime.mjs";
+import { runStructured } from "./model-providers.mjs";
+import { verifyObserverProposal, proposalStamp } from "./observer-verification.mjs";
+import { updateTurnKnowledge,backfillOwnerKnowledge } from "./project-knowledge.mjs";
 import { OBSERVER_OUTPUT_SCHEMA, applyObserverDecision } from "./semantic-model.mjs";
 import { readObserverState, readRuntimeConfig, writeObserverState } from "./runtime-config.mjs";
 import { sessionAdapter, sessionAdapters } from "./session-adapters.mjs";
+import {targetsForFiles, observerSubgraph} from "./module-cards.mjs";
 
 const MAX_EVENTS = 80;
 const INITIAL_DEADLINE_MS = 5_000;
@@ -27,7 +31,9 @@ export function compactSessionMeta(meta = {}) {
 
 export function compactObserverState(state = {}) {
   const sessions = {};
+  const ignored={...(state.ignored||{})};
   for (const [file, session] of Object.entries(state.sessions || {})) {
+    if(session.relevant===false&&!Object.keys(session.turns||{}).length){ignored[file]={provider:session.provider,meta:compactSessionMeta(session.meta),metaFormat:1,offset:session.offset||0};continue;}
     const turns = Object.values(session.turns || {}).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
     const keptTurns = [...turns.filter((turn) => !turn.finished), ...turns.filter((turn) => turn.finished).slice(0, 24)];
     const { scanSucceeded: _scanSucceeded, ...persistentSession } = session;
@@ -38,9 +44,11 @@ export function compactObserverState(state = {}) {
     };
   }
   return {
-    version: 4,
+    version: 5,
     initializedProviders: [...new Set(state.initializedProviders || [])],
     sessions,
+    ignored,
+    ...(state.knowledgeRetryAt?{knowledgeRetryAt:state.knowledgeRetryAt}:{}),
     ...(state.updatedAt ? { updatedAt: state.updatedAt } : {}),
   };
 }
@@ -61,33 +69,7 @@ function compactMap(snapshot) {
 }
 
 export function observerPrompt({ turn, final, snapshot }) {
-  return `You are Repo Canvas Observer, a silent semantic stenographer. Interpret one coding-agent turn and update an existing high-level project map.
-
-You never inspect the repository, never write code, never answer the owner and never invent explanations. Use only supplied public session events and the current evidence-backed semantic map. Hidden reasoning is unavailable and irrelevant.
-
-Rules:
-- use the language of the owner's current request for every human-visible work title, summary and new map label; if the request has no usable language signal, follow the current map;
-- prefer plain owner-facing domain language and preserve established project vocabulary; keep code identifiers and protocols in technical fields rather than unexplained visible jargon;
-- describe the concrete work in a short title and summary;
-- attach work to every existing semantic entity it genuinely affects;
-- target the most specific confirmed entity; the UI rolls activity up to visible parents and areas;
-- never attach work to a kind=person participant; target the project-owned capability, interface, module, service or other part being changed;
-- during active work, create a planned entity or relation only when the owner or working agent explicitly establishes the new concept, responsibility and endpoints;
-- at completion, update passports and relations only when public session evidence establishes the architectural effect;
-- keep the Architect's entity kinds, parent hierarchy and relation grammar;
-- every new relation label must be a specific directional verb plus object; include the contract, mechanism and public-session evidence available;
-- removing a file is not enough to remove an entity;
-- remove an entity only when the session establishes that the concept itself was eliminated or merged away;
-- rename, move or reimplementation keeps the stable entity id;
-- if evidence is insufficient, leave architecture unchanged;
-- for a final successful turn use done; for abort use stopped; otherwise active or blocked;
-- return required structured output only.
-
-Final checkpoint: ${final ? "yes" : "no"}
-Session: ${JSON.stringify({ id: turn.sessionId, model: turn.model, effort: turn.effort })}
-Current work: ${JSON.stringify({ request: turn.userMessage, title: turn.title, summary: turn.summary, targets: turn.targets })}
-Current semantic map: ${JSON.stringify(compactMap(snapshot))}
-New public events: ${JSON.stringify(turn.events)}`;
+  return promptTemplate("observer",{FINAL:final?"yes":"no",SESSION:JSON.stringify({id:turn.sessionId,model:turn.model,effort:turn.effort}),WORK:JSON.stringify({request:turn.userMessage,title:turn.title,summary:turn.summary,targets:turn.targets}),MAP:JSON.stringify(compactMap(observerSubgraph(snapshot,turn.targets))),EVENTS:JSON.stringify(turn.events)});
 }
 
 function provisionalCopy(language = "", text = "") {
@@ -144,7 +126,8 @@ export class CodexObserver {
   constructor({
     config = readRuntimeConfig(),
     state = readObserverState(),
-    runner = runCodexStructured,
+    runner = runStructured,
+    verifier = runner === runStructured ? runStructured : null,
     now = () => Date.now(),
     sessionsRoot,
     adapters,
@@ -156,6 +139,7 @@ export class CodexObserver {
     const compacted = compactObserverState(state);
     this.state = compacted;
     this.runner = runner;
+    this.verifier = verifier;
     this.now = now;
     this.sessionsRoot = sessionsRoot;
     const configured = config.providers || (config.provider ? [config.provider] : ["codex", "claude", "kimi"]);
@@ -165,6 +149,8 @@ export class CodexObserver {
     this.discoveryIntervalMs = discoveryIntervalMs;
     this.gitCache = new Map();
     this.running = new Map();
+    this.controller = new AbortController();
+    this.maxConcurrent = Math.max(1, Math.min(4, Number(config.maxConcurrent) || 2));
     this.lastDiscoveryAt = Number.NEGATIVE_INFINITY;
     this.dirty = JSON.stringify(compacted) !== JSON.stringify(state);
     this.errorTimes = new Map();
@@ -205,17 +191,24 @@ export class CodexObserver {
       const baseline = !providerKnown;
       const root = adapter.id === "codex" ? this.sessionsRoot : undefined;
       for (const file of adapter.listFiles(root)) {
-        const known = this.state.sessions[path.resolve(file)];
+        const key=path.resolve(file);
+        const known = this.state.sessions[key]||this.state.ignored[key];
         let meta;
         try { meta = known?.metaFormat === 1 ? known.meta : adapter.readMeta(file, root); } catch { continue; }
         if (!meta) continue;
+        const relevant = adapter.belongsToRepository(meta, this.config.repoRoot, this.gitCache);
+        if(!relevant) {
+          if(!this.state.ignored[key]){this.state.ignored[key]={provider:adapter.id,meta:compactSessionMeta(meta),metaFormat:1,offset:known?.offset||0};this.markDirty();}
+          if(this.state.sessions[key]){delete this.state.sessions[key];this.markDirty();}
+          continue;
+        }
+        if(this.state.ignored[key]){delete this.state.ignored[key];this.markDirty();}
         const session = this.ensureSession(file, meta, adapter, baseline);
         if (session.metaFormat !== 1 || JSON.stringify(session.meta) !== JSON.stringify(compactSessionMeta(meta))) {
           session.meta = compactSessionMeta(meta);
           session.metaFormat = 1;
           this.markDirty();
         }
-        const relevant = adapter.belongsToRepository(meta, this.config.repoRoot, this.gitCache);
         if (session.provider !== adapter.id || session.relevant !== relevant) this.markDirty();
         session.provider = adapter.id;
         session.relevant = relevant;
@@ -296,7 +289,9 @@ export class CodexObserver {
         title: copy.title, summary: copy.note, targets: [], finished: false,
       };
       session.turns[turnId] = turn;
-      provisionalWork(turn, session.meta, sessionAdapter(session.provider || "codex"), language);
+      const declared=getSnapshot().work.filter(item=>item.hookDriven&&item.session?.id===turn.sessionId&&item.status==="active"&&(!item.hookTurnId||item.hookTurnId===turnId)).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
+      if(declared){turn.workId=declared.id;turn.title=declared.title;turn.summary=declared.note;turn.targets=declared.targets||[];}
+      else provisionalWork(turn, session.meta, sessionAdapter(session.provider || "codex"), language);
       this.markDirty();
       return;
     }
@@ -320,6 +315,16 @@ export class CodexObserver {
     if (signal.kind === "user") {
       turn.userMessage = signal.text;
       turn.session = sessionAdapter(session.provider || "codex").locator(session.meta, signal.text);
+      if(this.config.observerMode==="turn")turn.title=String(signal.text||"").split("\n").find(line=>line.trim()&&!line.startsWith("#"))?.trim().slice(0,120)||turn.title;
+    }
+    if(this.config.observerMode==="turn"&&["user","tool"].includes(signal.kind)) {
+      const snapshot=getSnapshot();
+      const input=String(typeof signal.input==="string"?signal.input:JSON.stringify(signal.input||{})).replaceAll("\\\\","/").replaceAll("\\","/");
+      const refs=[...new Set(snapshot.entities.flatMap(item=>[item.path,...(item.evidence||[])]).filter(Boolean).map(ref=>String(ref).split(/#|::|:\d/)[0]))];
+      const files=refs.filter(file=>input.includes(file));
+      turn.targets=[...new Set([...(turn.targets||[]),...targetsForFiles(snapshot,files,this.config.repoRoot)])];
+      turn.summary=turn.targets.length?"Агент работает с файлами этих модулей":"Работа началась; затронутые модули пока не определены";
+      appendEvent(createEvent("work.upsert",{actor:"observer",payload:{id:turn.workId,title:turn.title,status:"active",targets:turn.targets,note:turn.summary,provisional:!turn.targets.length,session:turn.session}}));
     }
     if (signal.kind === "complete" || signal.kind === "aborted") {
       turn.finished = true;
@@ -425,14 +430,30 @@ export class CodexObserver {
   }
 
   async infer(turn, final = false) {
-    if (this.running.has(turn.workId)) return;
+    if (this.controller.signal.aborted || this.running.has(turn.workId) || this.running.size >= this.maxConcurrent) return;
+    const maxFinalAttempts = this.config.observerFinalAttempts || 3;
+    if (final && (turn.finalAttempts || 0) >= maxFinalAttempts) {
+      turn.finalPending = false;
+      turn.verificationPending = null;
+      turn.paused = {reason:`Повторная проверка остановлена после ${maxFinalAttempts} попыток`,at:new Date(this.now()).toISOString()};
+      this.reportError(turn.paused.reason, `final-limit:${turn.workId}`);
+      this.markDirty();
+      return;
+    }
+    if(final) {turn.finalAttempts=(turn.finalAttempts||0)+1;this.markDirty();}
+    const sentEvents = new Map(turn.events.map(event => [event, JSON.stringify(event)]));
+    const packet = { ...turn, events: structuredClone(turn.events) };
     const operation = (async () => {
       try {
         const snapshot = getSnapshot();
+        const outputSchema=structuredClone(OBSERVER_OUTPUT_SCHEMA);
+        const targetIds=snapshot.entities.filter(item=>item.kind!=="person").map(item=>item.id);
+        if(targetIds.length)outputSchema.properties.targetEntityIds.items={type:"string",enum:targetIds};else outputSchema.properties.targetEntityIds.maxItems=0;
         const result = await this.runner({
-          role: "observer", cwd: this.config.repoRoot,
-          prompt: observerPrompt({ turn, final, snapshot }), outputSchema: OBSERVER_OUTPUT_SCHEMA,
+          role: "observer", cwd: this.config.repoRoot, background:true,
+          prompt: observerPrompt({ turn: packet, final, snapshot }), outputSchema, signal: this.controller.signal,
         });
+        if (this.controller.signal.aborted) return;
         const terminalStatus = turn.finished ? (turn.finalKind === "aborted" ? "stopped" : "done") : undefined;
         if (terminalStatus) result.value.workStatus = terminalStatus;
         const context = {
@@ -442,17 +463,38 @@ export class CodexObserver {
           terminalStatus,
         };
         applyObserverDecision(result.value, context);
+        if(final && this.verifier && ((result.value.entityChanges||[]).length || (result.value.relationChanges||[]).length)) {
+          const verified=await verifyObserverProposal(result.value,context,{root:this.config.repoRoot,runner:options=>this.verifier({...options,background:true}),signal:this.controller.signal});
+          turn.verificationPending=verified.passed?null:{decision:result.value,stamp:verified.stamp};
+        } else if (final) {
+          turn.verificationPending = null;
+        }
+        if(final&&this.runner===runStructured&&turn.userMessage&&this.config.dialogSources!==false){
+          const file=Object.entries(this.state.sessions).find(([,session])=>session.turns?.[turn.turnId]===turn)?.[0];
+          try{await updateTurnKnowledge(this.config.repoRoot,{config:this.config,sessionId:turn.sessionId,provider:turn.provider,file,runner:options=>this.runner({...options,background:true}),signal:this.controller.signal});}
+          catch(error){if(this.controller.signal.aborted)throw error;this.reportError(`Не удалось уточнить решения: ${error.message}`,`knowledge:${turn.workId}`);}
+        }
         turn.title = result.value.workTitle;
         turn.summary = result.value.workSummary;
         turn.targets = result.value.targetEntityIds;
         turn.initialInferred = true;
+        turn.paused = null;
+        turn.failures=0;turn.retryAt=0;
         turn.inferredAt = this.now();
-        turn.events = [];
-        turn.priorityPending = false;
+        turn.events = turn.events.filter(event => sentEvents.get(event) !== JSON.stringify(event));
+        turn.priorityPending = turn.events.length > 0;
         turn.finalPending = turn.finished && !final;
         this.markDirty();
       } catch (error) {
+        if (this.controller.signal.aborted) return;
+        if(error.code==="BACKGROUND_LIMIT") {
+          if(final)turn.finalAttempts=Math.max(0,turn.finalAttempts-1);
+          turn.retryAt=Date.parse(error.until);turn.paused={reason:error.message,until:error.until};
+          this.markDirty();return;
+        }
+        turn.inferredAt = this.now();
         this.reportError(`Observer could not classify ${turn.workId}: ${error.message}`, `classify:${turn.workId}:${error.message}`);
+        turn.failures=(turn.failures||0)+1;turn.retryAt=this.now()+Math.min(120000,5000*2**Math.min(5,turn.failures-1));
         if (final) {
           appendEvent(createEvent("work.upsert", {
             actor: "observer",
@@ -471,25 +513,49 @@ export class CodexObserver {
     try { await operation; } finally { this.running.delete(turn.workId); }
   }
 
-  async runDue() {
+  async runDue({drain=false}={}) {
     this.expireStaleTurns();
     this.reconcileForkedTurns();
     this.reconcileStaleObserverWork();
+    do {
     const pending = [];
     for (const session of Object.values(this.state.sessions)) {
       if (!session.relevant) continue;
       for (const turn of Object.values(session.turns)) {
+        if(this.running.has(turn.workId)||this.running.size>=this.maxConcurrent)continue;
+        if(turn.retryAt && this.now()<turn.retryAt)continue;
+        if (turn.verificationPending) {
+          const stamp = proposalStamp(this.config.repoRoot, turn.verificationPending.decision);
+          if (turn.verificationPending.stamp !== stamp) {
+            // Consume the source change before requesting a model, including on failure.
+            turn.verificationPending.stamp = stamp;
+            turn.finalPending = true;
+            this.markDirty();
+          }
+        }
         if (turn.finalPending) pending.push(this.infer(turn, true));
         else if (turn.finished) continue;
+        else if (this.config.observerMode === "turn") continue;
         else if (!turn.initialInferred && (turn.events.some((item) => ["agent", "tool"].includes(item.kind))
           || this.now() - turn.startedAt >= INITIAL_DEADLINE_MS)) pending.push(this.infer(turn, false));
         else if (turn.priorityPending || (turn.events.length && this.now() - turn.inferredAt >= UPDATE_INTERVAL_MS)) pending.push(this.infer(turn, false));
       }
     }
     await Promise.all(pending);
+    if(!drain||!pending.length)break;
+    }while(!this.controller.signal.aborted);
+    if(!this.controller.signal.aborted&&this.runner===runStructured&&this.config.dialogSources!==false&&!this.running.size&&this.now()>=(this.state.knowledgeRetryAt||0)&&!Object.values(this.state.sessions).some(session=>Object.values(session.turns||{}).some(turn=>!turn.finished))) {
+      this.state.knowledgeRetryAt=this.now()+60000;this.markDirty();
+      const operation=backfillOwnerKnowledge(this.config.repoRoot,{config:this.config,runner:this.runner,signal:this.controller.signal}).catch(error=>{
+        if(this.controller.signal.aborted)return;
+        this.state.knowledgeRetryAt=error.code==="BACKGROUND_LIMIT"?Date.parse(error.until):this.now()+15*60000;
+        this.reportError("Не удалось продолжить чтение решений владельца: "+error.message,"knowledge-backfill");this.markDirty();
+      }).finally(()=>this.running.delete("knowledge-backfill"));
+      this.running.set("knowledge-backfill",operation);if(drain)await operation;
+    }
   }
 
-  async tick() {
+  async tick({ awaitModels = true } = {}) {
     if (this.now() - this.lastDiscoveryAt >= this.discoveryIntervalMs) {
       this.discover();
       this.lastDiscoveryAt = this.now();
@@ -524,7 +590,9 @@ export class CodexObserver {
       }
     }
     this.reconcileKnownObserverWork();
-    await this.runDue();
+    const work = this.runDue({drain:awaitModels});
+    if (awaitModels) await work;
+    else work.catch(error => this.reportError(`Observer model failed: ${error.message}`, "model"));
     if (this.dirty) {
       this.state.updatedAt = new Date(this.now()).toISOString();
       this.writeState(this.state);
@@ -539,9 +607,10 @@ export class CodexObserver {
     return {
       providers: this.adapters.map((adapter) => adapter.id), repoRoot: this.config.repoRoot,
       trackedSessions: sessions.filter((session) => session.relevant).length,
-      ignoredSessions: sessions.filter((session) => !session.relevant).length,
+      ignoredSessions: sessions.filter((session) => !session.relevant).length+Object.keys(this.state.ignored).length,
       activeTurns: turns.filter((turn) => !turn.finished).length,
       pendingModelCalls: this.running.size,
+      paused: turns.filter(turn=>turn.paused).map(turn=>({workId:turn.workId,...turn.paused})),
     };
   }
 }
@@ -563,20 +632,22 @@ export function startObserver(options = {}) {
     timer = setTimeout(async () => {
       if (!ticking) {
         ticking = true;
-        try { await observer.tick(); } catch (error) { observer.reportError(`Observer tick failed: ${error.message}`, `tick:${error.code || error.message}`); }
+        try { await observer.tick({ awaitModels: false }); } catch (error) { observer.reportError(`Observer tick failed: ${error.message}`, `tick:${error.code || error.message}`); }
         finally { ticking = false; }
       }
       schedule();
     }, observer.config.pollMs);
     timer.unref?.();
   };
-  observer.tick().catch((error) => observer.reportError(`Observer start failed: ${error.message}`, `start:${error.code || error.message}`)).finally(schedule);
+  observer.tick({ awaitModels: false }).catch((error) => observer.reportError(`Observer start failed: ${error.message}`, `start:${error.code || error.message}`)).finally(schedule);
   return {
     observer,
     stop: async () => {
       stopped = true;
+      observer.controller.abort();
       if (timer) clearTimeout(timer);
       await Promise.all(observer.running.values());
+      if(observer.dirty){observer.writeState(compactObserverState(observer.state));observer.dirty=false;}
     },
   };
 }

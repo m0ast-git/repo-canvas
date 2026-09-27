@@ -5,11 +5,27 @@ import http from "node:http";
 import path from "node:path";
 
 import { appendEvents, createEvent, getSnapshot, packageRoot, projectRoot } from "./repo-canvas/scripts/canvas-store.mjs";
-import { runArchitect } from "./repo-canvas/scripts/architect.mjs";
+import { stopModelProcesses } from "./repo-canvas/scripts/model-runtime.mjs";
+import { runCorrection, undoCorrection } from "./repo-canvas/scripts/corrections.mjs";
+import { historyPage, stateAtCheckpoint, currentHistoryState, saveCheckpointGeometry, createCheckpoint, addHistoryComment, historyComments, compareSnapshots } from "./repo-canvas/scripts/canvas-history.mjs";
+import { discoverModelProviders, configuredModelCatalog, probeModel, roleModelPresets, modelConfigPatch } from "./repo-canvas/scripts/model-providers.mjs";
+import { readSourceJson, sourceIndexFile, readDialogSource, readCodeSource } from "./repo-canvas/scripts/project-sources.mjs";
+import { writeRuntimeConfig } from "./repo-canvas/scripts/runtime-config.mjs";
+import { runArchitectInWorker } from "./repo-canvas/scripts/architect-worker.mjs";
 import { startObserver } from "./repo-canvas/scripts/observer.mjs";
+import { startGitTracker, readGitSource, stopGitProcesses } from "./repo-canvas/scripts/git-history.mjs";
+import { startCodeWatcher, reviewCodeChanges } from "./repo-canvas/scripts/code-observer.mjs";
+import { answerProjectQuestion } from "./repo-canvas/scripts/project-questions.mjs";
+import { readHistoricalEvidence } from "./repo-canvas/scripts/source-archive.mjs";
+import { reconstructHistory, saveReconstructionGeometry } from "./repo-canvas/scripts/history-reconstruction.mjs";
 import { readArchitectState, readOrCreateApiToken, readRuntimeConfig, writeArchitectState } from "./repo-canvas/scripts/runtime-config.mjs";
 import { openSessionLocator } from "./repo-canvas/scripts/session-locator.mjs";
 import { createUpdateService } from "./repo-canvas/scripts/update-service.mjs";
+import {publicSnapshot, snapshotDelta} from "./repo-canvas/scripts/live-state.mjs";
+import {healthReport} from "./repo-canvas/scripts/health-report.mjs";
+import {buildEstimate} from "./repo-canvas/scripts/module-cards.mjs";
+import {createSkeleton} from "./repo-canvas/scripts/skeleton-map.mjs";
+import {ingestAgentHook} from "./repo-canvas/scripts/agent-hooks.mjs";
 
 const host = process.env.CANVAS_HOST || "127.0.0.1";
 const port = Number(process.env.CANVAS_PORT || 4173);
@@ -23,7 +39,9 @@ if (configuredApiToken && !/^[A-Za-z0-9_-]{43}$/.test(configuredApiToken)) {
 }
 const apiToken = configuredApiToken || readOrCreateApiToken();
 let observerService = null;
+let gitTracker=null;let codeWatcher=null;
 let architectJob = null;
+let jobController = null;
 const idleArchitectState = {
   status: "idle", phase: "idle", startedAt: null, heartbeatAt: null, finishedAt: null,
   attempt: 0, activityCount: 0, detail: null, result: null, error: null,
@@ -37,7 +55,7 @@ if (architectState.status === "running") {
   const interruptedAt = new Date().toISOString();
   architectState = {
     ...architectState, status: "failed", phase: "failed", heartbeatAt: interruptedAt, finishedAt: interruptedAt,
-    error: "Architect был прерван перезапуском локального Canvas. Запустите повторную генерацию ещё раз.",
+    error: "Обновление прервано остановкой сервера. Сохранённая карта доступна; запустите обновление ещё раз.",
   };
   persistArchitectState();
 }
@@ -48,7 +66,7 @@ function publicArchitectState() {
     ...architectState,
     running: architectJob !== null,
     checkedAt: new Date().toISOString(),
-    elapsedMs: architectState.startedAt ? Math.max(0, Date.now() - Date.parse(architectState.startedAt)) : 0,
+    elapsedMs: architectState.startedAt ? Math.max(0, (architectState.finishedAt?Date.parse(architectState.finishedAt):Date.now()) - Date.parse(architectState.startedAt)) : 0,
   };
 }
 
@@ -59,23 +77,32 @@ function architectProgress(progress = {}) {
     heartbeatAt: progress.at || new Date().toISOString(),
     attempt: Number.isInteger(progress.attempt) ? progress.attempt : architectState.attempt,
     activityCount: architectState.activityCount + 1,
+    model: progress.model || architectState.model || null,
+    call: progress.call || architectState.call || null,
+    eventType: progress.eventType || null,
     detail: Object.hasOwn(progress, "detail") ? progress.detail : architectState.detail,
   };
   persistArchitectState();
 }
 
-function startArchitectRefresh(viewpoint = "") {
+function startMapJob(run, kind="build", metadata={}) {
   if (architectJob) return false;
   const startedAt = new Date().toISOString();
   architectState = {
-    status: "running", phase: "starting", startedAt, heartbeatAt: startedAt, finishedAt: null,
-    attempt: 0, activityCount: 0, detail: null, result: null, error: null,
+    status: "running", kind, phase: "starting", startedAt, heartbeatAt: startedAt, finishedAt: null,
+    attempt: 0, activityCount: 0, detail: null, result: null, error: null, ...metadata,
   };
   persistArchitectState();
-  architectJob = runArchitect({ refresh: true, viewpoint, onProgress: architectProgress })
+  jobController=new AbortController();
+  architectJob = Promise.resolve().then(async()=>{
+    if(kind==="build")await pauseObservation();
+    return run({signal:jobController.signal,onProgress:architectProgress});
+  })
     .then((result) => {
+      if(kind==="probe" && result.status!=="connected") throw new Error(result.error || "Исполнитель не подтвердил подключение");
+      const {state:_state,...publicResult}=result;
       const finishedAt = new Date().toISOString();
-      architectState = { ...architectState, status: "done", phase: "done", heartbeatAt: finishedAt, finishedAt, result, error: null, detail: null };
+      architectState = { ...architectState, status: "done", phase: "done", heartbeatAt: finishedAt, finishedAt, result:publicResult, error: null, detail: null };
       persistArchitectState();
     })
     .catch((error) => {
@@ -86,8 +113,20 @@ function startArchitectRefresh(viewpoint = "") {
       };
       persistArchitectState();
     })
-    .finally(() => { architectJob = null; });
+    .finally(() => { architectJob = null;if(kind==="build"&&!stopping)configureObservation().catch(error=>console.warn(`Observation could not resume: ${error.message}`)); });
   return true;
+}
+
+function startArchitectRefresh(viewpoint="",updateReason="manual") { return startMapJob(options=>{if(!getSnapshot().semantic)createSkeleton(projectRoot);return runArchitectInWorker({refresh:true,viewpoint,...options});},"build",{updateReason}); }
+async function pauseObservation() {
+  await observerService?.stop();observerService=null;codeWatcher?.stop();gitTracker?.stop();codeWatcher=null;gitTracker=null;
+}
+async function configureObservation() {
+  await pauseObservation();
+  const config=readRuntimeConfig();if(!config.enabled||!getSnapshot().semantic||process.env.REPO_CANVAS_OBSERVE==="0")return;
+  codeWatcher=startCodeWatcher(projectRoot,{enabled:()=>readRuntimeConfig().enabled,isBusy:()=>Boolean(observerService?.observer.summary().activeTurns||observerService?.observer.running.size),run:files=>startMapJob(options=>reviewCodeChanges({root:projectRoot,files,...options}),"code-review")});
+  gitTracker=startGitTracker(projectRoot,{onChange:()=>codeWatcher.schedule(getSnapshot().entities.flatMap(item=>[item.path,...(item.evidence||[])]).filter(Boolean).map(ref=>ref.split(/#|::|:\d/)[0]))});
+  if(config.dialogSources!==false)observerService=startObserver({config});
 }
 
 function openCanvasInBrowser(url) {
@@ -202,12 +241,12 @@ function guardApiAuthorization(request) {
   }
 }
 
-async function readJson(request) {
+async function readJson(request,limit=1024*1024) {
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
     total += chunk.length;
-    if (total > 1024 * 1024) throw new HttpError(413, "Request body exceeds 1 MiB");
+    if (total > limit) throw new HttpError(413, "Request body is too large");
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -222,6 +261,7 @@ function saveLayout(body) {
   const requestedRevision = Number(body.canvasRevision);
   if (!Number.isInteger(requestedRevision) || requestedRevision < 0) throw new HttpError(400, "canvasRevision must be a non-negative integer");
   if (!Array.isArray(body.items) || body.items.length === 0) throw new HttpError(400, "items must be a non-empty array");
+  if (body.expected !== undefined && !Array.isArray(body.expected)) throw new HttpError(400, "expected must be an array");
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const snapshot = getSnapshot();
     if (snapshot.storeErrors.length) throw new HttpError(409, "Repo Canvas store must pass check before saving layout");
@@ -229,11 +269,20 @@ function saveLayout(body) {
     const areas = new Map(snapshot.areas.map((item) => [item.id, item]));
     const entities = new Map(snapshot.entities.map((item) => [item.id, item]));
     const work = new Map(snapshot.work.map((item) => [item.id, item]));
+    for (const expected of body.expected || []) {
+      const collection = { area: areas, entity: entities, work }[expected.kind];
+      const current = collection?.get(expected.id);
+      if (!current || Object.entries(expected.values || {}).some(([key, value]) => (current[key] ?? null) !== (value ?? null))) {
+        throw new HttpError(409, "Этот объект изменён в другой вкладке. Обновите карту перед повтором.", { conflict: true, revision: snapshot.revision });
+      }
+    }
     const requestedEntityAreas = new Map(body.items.filter((item) => item?.kind === "entity" && Object.hasOwn(item, "areaId")).map((item) => [String(item.id || "").trim(), String(item.areaId || "").trim()]));
     const seen = new Set();
     const events = body.items.map((item) => {
       const kind = String(item?.kind || ""); const id = String(item?.id || "").trim();
       const x = Number(item?.x); const y = Number(item?.y); const key = `${kind}:${id}`;
+      if(item.resetPosition!==undefined&&typeof item.resetPosition!=="boolean")throw new HttpError(400,"resetPosition must be a boolean");
+      const position=item.resetPosition?{x:null,y:null}:{x,y};
       if (!id || seen.has(key)) throw new HttpError(400, "Each layout item must have a unique id and kind");
       if (!Number.isFinite(x) || !Number.isFinite(y)) throw new HttpError(400, `Layout coordinates must be finite for ${key}`);
       seen.add(key);
@@ -248,7 +297,7 @@ function saveLayout(body) {
         if (minWidth !== undefined && (!Number.isFinite(minWidth) || minWidth < 0)) throw new HttpError(400, `Area minimum width must be non-negative for ${id}`);
         if (minHeight !== undefined && (!Number.isFinite(minHeight) || minHeight < 0)) throw new HttpError(400, `Area minimum height must be non-negative for ${id}`);
         const { actor, updatedAt, ...payload } = current;
-        return createEvent("area.upsert", { actor: "owner", payload: { ...payload, x, y, ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}), ...(minWidth !== undefined ? { minWidth } : {}), ...(minHeight !== undefined ? { minHeight } : {}) } });
+        return createEvent("area.upsert", { actor: "owner", payload: { ...payload, ...position, ...(width !== undefined ? { width } : {}), ...(height !== undefined ? { height } : {}), ...(minWidth !== undefined ? { minWidth } : {}), ...(minHeight !== undefined ? { minHeight } : {}) } });
       }
       if (kind === "entity") {
         const current = entities.get(id); if (!current) throw new HttpError(404, `Entity not found: ${id}`);
@@ -256,7 +305,7 @@ function saveLayout(body) {
         if (Object.hasOwn(item, "areaId")) {
           areaId = String(item.areaId || "").trim();
           if (current.kind === "person" && areaId) throw new HttpError(400, "A person cannot be placed inside a project area");
-          if (current.kind !== "person" && !areas.has(areaId)) throw new HttpError(400, `Entity area not found: ${areaId}`);
+          if (areaId && !areas.has(areaId)) throw new HttpError(400, `Entity area not found: ${areaId}`);
         }
         let parentId = current.parentId || "";
         if (Object.hasOwn(item, "parentId")) {
@@ -279,7 +328,12 @@ function saveLayout(body) {
           if (!parent || parentAreaId !== areaId) throw new HttpError(400, "Entity and parent must belong to the same project area");
         }
         const { actor, updatedAt, ...payload } = current;
-        return createEvent("entity.upsert", { actor: "owner", payload: { ...payload, areaId, parentId, x, y } });
+        const ownership={...(parentId!==(current.parentId||"")?{ownerParentId:parentId}:{}),...(areaId!==current.areaId?{ownerAreaId:areaId}:{})};
+        for(const [key,value] of [["ownerAreaId",areaId],["ownerParentId",parentId]])if(Object.hasOwn(item,key)){
+          if(item[key]!==null&&item[key]!==value)throw new HttpError(400,"Закрепление элемента должно соответствовать его положению");
+          ownership[key]=item[key];
+        }
+        return createEvent("entity.upsert", { actor: "owner", payload: { ...payload, areaId, parentId, ...position,...ownership } });
       }
       if (kind === "work") {
         const current = work.get(id); if (!current) throw new HttpError(404, `Work not found: ${id}`);
@@ -326,6 +380,11 @@ function saveRename(body) {
   if (!target) throw new HttpError(400, `Unsupported rename kind: ${kind}`);
   const current = target.items.find((item) => item.id === id);
   if (!current) throw new HttpError(404, `${kind} not found: ${id}`);
+  for (const [name, value] of Object.entries(body.expectedValues || {})) {
+    const field = target.fields[name];
+    const fallback = name === "title" ? current.title || current.label || "" : current.note || current.purpose || "";
+    if (field && (current[field] || fallback) !== (value || "")) throw new HttpError(409, "Этот текст изменён в другой вкладке. Обновите карту перед повтором.", {conflict:true, revision:snapshot.revision});
+  }
   const changes = {};
   for (const [name, field] of Object.entries(target.fields)) {
     if (!(name in requestedValues)) continue;
@@ -379,7 +438,7 @@ async function serveStatic(pathname, response, headOnly = false) {
     const headers = {
       "Content-Type": contentType,
       "Content-Length": content.length,
-      "Cache-Control": "no-store",
+      "Cache-Control": /^\/assets\/[^/]+-[\w-]+\.[\w]+$/.test(pathname) ? "public, max-age=31536000, immutable" : "no-cache",
       "X-Content-Type-Options": "nosniff",
     };
     if (pathname === "/") {
@@ -396,6 +455,28 @@ async function serveStatic(pathname, response, headOnly = false) {
   }
 }
 
+const streamClients=new Set();let streamSnapshot=null;let streamRevision=-1;let streamJob="";let streaming=false;
+const observationStatus=()=>({enabled:readRuntimeConfig().enabled,running:Boolean(observerService||codeWatcher),pausedByHost:process.env.REPO_CANVAS_OBSERVE==="0",...(observerService?.observer.summary()||{})});
+function sendStream(response,packet) {
+  if(response.destroyed||response.writableLength>1024*1024){response.destroy();streamClients.delete(response);return;}
+  response.write(`data: ${JSON.stringify(packet)}\n\n`);
+}
+const streamTimer=setInterval(async()=>{
+  if(!streamClients.size||streaming)return;streaming=true;
+  try {
+    const snapshot=getSnapshot();
+    if(snapshot.revision!==streamRevision) {
+      const next=publicSnapshot(await currentHistoryState(snapshot));const packet=snapshotDelta(streamSnapshot,next);
+      streamSnapshot=next;streamRevision=next.revision;
+      for(const response of streamClients)sendStream(response,{...packet,observer:observationStatus()});
+    }
+    const jobKey=JSON.stringify(architectState);
+    if(jobKey!==streamJob) {streamJob=jobKey;for(const response of streamClients)sendStream(response,{type:"job",job:publicArchitectState()});}
+    for(const response of streamClients)sendStream(response,{type:"heartbeat",at:Date.now(),observer:observationStatus()});
+  } catch {for(const response of streamClients)response.destroy();streamClients.clear();}
+  finally {streaming=false;}
+},1000);streamTimer.unref();
+
 const server = http.createServer(async (request, response) => {
   try {
     guardRequest(request);
@@ -411,16 +492,140 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/api/state") {
-      sendJson(response, 200, getSnapshot());
+      sendJson(response, 200, publicSnapshot(await currentHistoryState()));
       return;
+    }
+
+    if(request.method==="GET" && url.pathname==="/api/stream") {
+      response.writeHead(200,{"Content-Type":"text/event-stream","Cache-Control":"no-store","Connection":"keep-alive","X-Accel-Buffering":"no"});
+      response.write("retry: 2000\n\n");streamClients.add(response);
+      const snapshot=publicSnapshot(await currentHistoryState());
+      sendStream(response,{type:"snapshot",snapshot,observer:observationStatus()});
+      sendStream(response,{type:"job",job:publicArchitectState()});
+      response.on("close",()=>streamClients.delete(response));return;
+    }
+    if(request.method==="GET" && url.pathname==="/api/health/report") {
+      sendJson(response,200,healthReport(observationStatus()));return;
+    }
+    if(request.method==="GET"&&url.pathname==="/api/architect/estimate") {
+      sendJson(response,200,buildEstimate(projectRoot,getSnapshot(),readRuntimeConfig()));return;
+    }
+    if(request.method==="POST"&&url.pathname==="/api/architect/skeleton") {
+      guardMutation(request);if(architectJob)throw new HttpError(409,"Дождитесь завершения построения");
+      sendJson(response,200,createSkeleton(projectRoot));return;
+    }
+    if(request.method==="POST"&&url.pathname==="/api/hooks") {
+      guardMutation(request);sendJson(response,200,ingestAgentHook(await readJson(request,256000)));return;
+    }
+    if(request.method==="GET" && /^\/api\/work\/[^/]+$/.test(url.pathname)) {
+      const id=decodeURIComponent(url.pathname.slice("/api/work/".length));
+      const snapshot=url.searchParams.get("checkpointId")?await stateAtCheckpoint(url.searchParams.get("checkpointId")):getSnapshot();
+      const work=snapshot.work.find(item=>item.id===id);if(!work)throw new HttpError(404,"Работа не найдена");sendJson(response,200,work);return;
+    }
+
+    if(request.method==="GET" && url.pathname==="/api/history") {
+      sendJson(response,200,await historyPage(Object.fromEntries(url.searchParams)));return;
+    }
+    if(request.method==="GET" && url.pathname==="/api/history/state") {
+      const id=url.searchParams.get("id");const state=await stateAtCheckpoint(id);
+      sendJson(response,200,{...publicSnapshot(state),_comments:historyComments(id)});return;
+    }
+    if(request.method==="GET" && url.pathname==="/api/history/comments") {
+      sendJson(response,200,historyComments(url.searchParams.get("id")));return;
+    }
+    if(request.method==="GET" && url.pathname==="/api/history/compare") {
+      const from=url.searchParams.get("from");const to=url.searchParams.get("to");
+      const before=await stateAtCheckpoint(from);const after=to&&to!=="live"?await stateAtCheckpoint(to):await currentHistoryState();
+      const comparison=compareSnapshots(before,after);
+      for(const item of comparison.removed)if(["entities","areas"].includes(item.kind))item.geometry=before._geometry?.[item.kind]?.find(rect=>rect.id===item.id)||null;
+      sendJson(response,200,{from,to:to||"live",fromPoint:before._history,toPoint:after._history||{title:"Live"},...comparison});return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/history/geometry") {
+      guardMutation(request);const body=await readJson(request,12*1024*1024);sendJson(response,200,await saveCheckpointGeometry(body.id,body.revision,body.geometry));return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/history/reconstruct") {
+      guardMutation(request);const body=await readJson(request);
+      if(!startMapJob(options=>reconstructHistory({root:projectRoot,ids:body.ids,...options}),"reconstruction"))throw new HttpError(409,"Уже выполняется модельная задача");
+      sendJson(response,202,publicArchitectState());return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/history/reconstruction-geometry") {
+      guardMutation(request);const body=await readJson(request,12*1024*1024);sendJson(response,200,saveReconstructionGeometry(body.id,body.revision,body.geometry));return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/history/checkpoint") {
+      guardMutation(request);const body=await readJson(request);sendJson(response,201,await createCheckpoint(body.title));return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/history/comment") {
+      guardMutation(request);const body=await readJson(request);sendJson(response,201,await addHistoryComment(body.id,body.text));return;
     }
 
     if (request.method === "GET" && url.pathname === "/api/revision") {
       const snapshot = getSnapshot();
-      sendJson(response, 200, { revision: snapshot.revision, updatedAt: snapshot.updatedAt });
+      sendJson(response, 200, { revision: snapshot.revision, updatedAt: snapshot.updatedAt,observer:{enabled:readRuntimeConfig().enabled,running:Boolean(observerService||codeWatcher)} });
       return;
     }
 
+    if(request.method==="GET" && url.pathname==="/api/models") {
+      const config=readRuntimeConfig();
+      sendJson(response,200,{providers:discoverModelProviders(),models:configuredModelCatalog("codex"),roles:roleModelPresets(config),config:{enabled:config.enabled,modelProvider:config.modelProvider||"",allowedModelProviders:config.allowedModelProviders||[],modelPool:config.modelPool||[],maxModelCalls:config.maxModelCalls||14,maxModelTokens:config.maxModelTokens||300000,backgroundMaxCallsPerHour:config.backgroundMaxCallsPerHour||60,backgroundMaxTokensPerDay:config.backgroundMaxTokensPerDay||300000,pausedByHost:process.env.REPO_CANVAS_OBSERVE==="0",dialogSources:config.dialogSources!==false,providers:config.providers}});
+      return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/models/config") {
+      guardMutation(request);const body=await readJson(request);
+      if(architectJob)throw new HttpError(409,"Дождитесь завершения текущей модельной задачи");
+      const patch=modelConfigPatch(body);
+      if(body.maxModelCalls!==undefined)patch.maxModelCalls=Math.max(1,Math.min(50,Number(body.maxModelCalls)||14));
+      if(body.maxModelTokens!==undefined)patch.maxModelTokens=Math.max(1000,Math.min(3000000,Number(body.maxModelTokens)||300000));
+      if(body.backgroundMaxCallsPerHour!==undefined)patch.backgroundMaxCallsPerHour=Math.max(1,Math.min(200,Number(body.backgroundMaxCallsPerHour)||60));
+      if(body.backgroundMaxTokensPerDay!==undefined)patch.backgroundMaxTokensPerDay=Math.max(1000,Math.min(3000000,Number(body.backgroundMaxTokensPerDay)||300000));
+      if(body.dialogSources!==undefined)patch.dialogSources=body.dialogSources===true;
+      if(body.enabled!==undefined)patch.enabled=body.enabled===true;
+      if(body.resumeObservation===true)delete process.env.REPO_CANVAS_OBSERVE;
+      const config=writeRuntimeConfig(patch);await configureObservation();sendJson(response,200,config);return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/models/probe") {
+      guardMutation(request);const body=await readJson(request);
+      if(!["codex","claude","kimi"].includes(body.provider))throw new HttpError(400,"Неизвестный исполнитель");
+      if(!startMapJob(()=>probeModel({cwd:projectRoot,provider:body.provider}),"probe"))throw new HttpError(409,"Уже выполняется модельная задача");
+      sendJson(response,202,publicArchitectState());return;
+    }
+    if(request.method==="GET" && url.pathname==="/api/sources") {
+      const index=readSourceJson(sourceIndexFile(projectRoot),{records:[],coverage:null});const config=readRuntimeConfig();
+      const allowed=config.dialogSources===false?[]:index.records.filter(row=>config.providers.includes(row.provider)&&!config.excludedSourceFiles?.includes(row.file));
+      sendJson(response,200,{coverage:index.coverage,records:allowed.map(({file,start,end,...row})=>row).slice(-200)});return;
+    }
+    if(request.method==="GET" && url.pathname==="/api/source") {
+      const reference=url.searchParams.get("id")||"";
+      const source=reference.startsWith("dialog:")?readDialogSource(projectRoot,reference):url.searchParams.has("checkpointId")?readHistoricalEvidence(projectRoot,await stateAtCheckpoint(url.searchParams.get("checkpointId")),reference):url.searchParams.has("commit")?await readGitSource(projectRoot,url.searchParams.get("commit"),reference):readCodeSource(projectRoot,reference);
+      if(url.searchParams.get("view")==="file"&&!reference.startsWith("dialog:")) {
+        if(source.error)throw new HttpError(404,source.error);
+        const fullReference=source.path||reference.replace(/:(\d+)(?:[-:]\d+)?$/,"");
+        const full=url.searchParams.has("checkpointId")?readHistoricalEvidence(projectRoot,await stateAtCheckpoint(url.searchParams.get("checkpointId")),fullReference):readCodeSource(projectRoot,fullReference,{maxChars:4*1024*1024});
+        const value=full.error?source:full;
+        const escape=text=>String(text||"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+        response.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Content-Security-Policy":"default-src 'none'; style-src 'unsafe-inline'"});
+        response.end(`<!doctype html><html lang="ru"><meta charset="utf-8"><title>${escape(fullReference)}</title><style>body{margin:24px;font:14px system-ui;color:#18212d;background:#fff}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 monospace}a{color:#245fd1}mark{background:#fff0a8}</style><h1>${escape(fullReference)}</h1><p>Источник описания на карте. ${full.error?"Показан сохранённый фрагмент.":""}</p><pre>${String(value.text||"").split("\n").map((line,index)=>{const number=(value.first||1)+index;return `<span id="L${number}">${number>=source.first&&number<=source.last?`<mark>${escape(line)}</mark>`:escape(line)}</span>`;}).join("\n")}</pre></html>`);return;
+      }
+      sendJson(response,200,source);return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/questions") {
+      guardMutation(request);const body=await readJson(request);const snapshot=body.checkpointId?await stateAtCheckpoint(body.checkpointId):getSnapshot();
+      if(!startMapJob(options=>answerProjectQuestion({root:projectRoot,snapshot,question:body.question,...options}),"question"))throw new HttpError(409,"Уже выполняется модельная задача");
+      sendJson(response,202,publicArchitectState());return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/corrections") {
+      guardMutation(request);const body=await readJson(request);
+      if(!startMapJob(options=>runCorrection({root:projectRoot,kind:body.kind,id:body.id,instruction:body.instruction,action:body.action,otherId:body.otherId,...options}),"correction"))throw new HttpError(409,"Уже выполняется модельная задача");
+      sendJson(response,202,publicArchitectState());return;
+    }
+    if(request.method==="POST" && url.pathname==="/api/corrections/undo") {
+      guardMutation(request);const body=await readJson(request);sendJson(response,200,undoCorrection(body.id));return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/architect/cancel") {
+      guardMutation(request);
+      if(architectJob){architectState={...architectState,cancelRequested:true};persistArchitectState();jobController?.abort();}
+      sendJson(response,202,publicArchitectState());return;
+    }
     if (request.method === "GET" && url.pathname === "/api/architect/status") {
       sendJson(response, 200, publicArchitectState());
       return;
@@ -454,7 +659,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/layout") {
       guardMutation(request);
       const result = saveLayout(await readJson(request));
-      sendJson(response, 201, { ok: true, ...result });
+      sendJson(response, 201, { ok: true, ...result,state:await currentHistoryState(result.state) });
       return;
     }
 
@@ -469,7 +674,9 @@ const server = http.createServer(async (request, response) => {
       guardMutation(request);
       const body = await readJson(request);
       const viewpoint = String(body.viewpoint || "").trim().slice(0, 1200);
-      const started = startArchitectRefresh(viewpoint);
+      const reason=["manual","stale-sources","invalid-evidence","unreadable-evidence","verification-failed"].includes(body.reason)?body.reason:"manual";
+      const started = startArchitectRefresh(viewpoint,reason);
+      if(!started)throw new HttpError(409,"Сейчас выполняется другая проверка проекта. Обновление Canvas не запущено. Повторите после её завершения.");
       sendJson(response, 202, { ok: true, started, ...publicArchitectState() });
       return;
     }
@@ -513,24 +720,27 @@ server.listen(port, host, () => {
   console.log(`Repo Canvas listening at ${canvasUrl}`);
   openCanvasInBrowser(canvasUrl);
   updateService.check().catch(() => {});
-  if (runtimeConfig.enabled && getSnapshot().semantic) {
-    observerService = startObserver({ config: runtimeConfig });
-    console.log(`Repo Canvas observer: ${observerService.observer.adapters.map((item) => item.id).join(", ")} sessions for ${runtimeConfig.repoRoot}`);
-  }
+  configureObservation().catch(error=>console.warn(`Observer: ${error.message}`));
 });
 
 let stopping = false;
 function shutdown(signal) {
   if (stopping) return;
   stopping = true;
+  clearInterval(streamTimer);for(const response of streamClients)response.end();streamClients.clear();
   console.log(`Repo Canvas received ${signal}; stopping.`);
   const deadline = setTimeout(() => {
     server.closeAllConnections?.();
     process.exit(0);
-  }, 1_500);
+  }, 5_000);
   deadline.unref();
-  observerService?.stop().catch((error) => console.error(`Observer shutdown error: ${error.message}`));
-  server.close(() => {
+  jobController?.abort();
+  gitTracker?.stop();codeWatcher?.stop();
+  stopGitProcesses();
+  stopModelProcesses();
+  const drained = observerService?.stop().catch((error) => console.error(`Observer shutdown error: ${error.message}`));
+  server.close(async () => {
+    await Promise.allSettled([drained,architectJob].filter(Boolean));
     clearTimeout(deadline);
     process.exit(0);
   });

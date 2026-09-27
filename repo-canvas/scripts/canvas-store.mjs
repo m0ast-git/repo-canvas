@@ -2,6 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { journalState, cacheAppended, cachedSnapshot } from "./journal-cache.mjs";
+import { reduceEvents } from "./snapshot-reducer.mjs";
+export { reduceEvents } from "./snapshot-reducer.mjs";
 import { validateEvent, validateEventSequence } from "./canvas-schema.mjs";
 import { packageRoot, projectRoot, resolveDataDirectory } from "./project-root.mjs";
 
@@ -16,7 +19,11 @@ const sleeper = new Int32Array(new SharedArrayBuffer(4));
 
 function ensureStoreUnlocked() {
   fs.mkdirSync(dataDirectory, { recursive: true });
-  if (!fs.existsSync(eventsFile)) fs.writeFileSync(eventsFile, "", { encoding: "utf8", mode: 0o600 });
+  // Another reader may create and fill the journal between the existence check and open.
+  if(!fs.existsSync(eventsFile)) {
+    try { fs.writeFileSync(eventsFile, "", { encoding:"utf8", mode:0o600, flag:"wx" }); }
+    catch(error) { if(error.code!=="EEXIST")throw error; }
+  }
 }
 
 function processIsAlive(pid) {
@@ -30,22 +37,28 @@ function processIsAlive(pid) {
 }
 
 function reclaimStaleLock() {
+  let descriptor;
   try {
-    const stats = fs.statSync(lockFile);
+    descriptor=fs.openSync(lockFile,"r");
+    const stats = fs.fstatSync(descriptor);
     if (Date.now() - stats.mtimeMs < STALE_LOCK_MS) return false;
     let owner = null;
     try {
-      owner = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+      owner = JSON.parse(fs.readFileSync(descriptor, "utf8"));
     } catch {
       // An old unreadable lock has no verifiable live owner.
     }
     if (owner?.pid && processIsAlive(Number(owner.pid))) return false;
+    // Another writer may already have replaced the abandoned lock. Never read
+    // its not-yet-written owner as an abandoned lock, or remove its fresh file.
+    const current=fs.statSync(lockFile);
+    if(current.ino!==stats.ino||current.birthtimeMs!==stats.birthtimeMs||current.mtimeMs!==stats.mtimeMs)return false;
     fs.unlinkSync(lockFile);
     return true;
   } catch (error) {
     if (error.code === "ENOENT") return true;
     return false;
-  }
+  } finally {if(descriptor!==undefined)fs.closeSync(descriptor);}
 }
 
 function acquireStoreLock(timeoutMs = LOCK_TIMEOUT_MS) {
@@ -103,32 +116,18 @@ export function createEvent(type, { actor = "unknown", payload = {} } = {}) {
   };
 }
 
-export function appendEvent(event, { expectedRevision = null } = {}) {
-  const validation = validateEvent(event);
-  if (validation.length) throw new Error(`Invalid event: ${validation.join("; ")}`);
+export function appendEvent(event,options={}) {
+  appendEvents([event],options);return event;
+}
 
-  return withStoreLock(() => {
-    const current = parseStoreContent(fs.readFileSync(eventsFile, "utf8"));
-    const errors = [...current.parseErrors, ...current.validationErrors];
-    if (errors.length) throw new Error("Cannot append while the Repo Canvas store is invalid; run check and repair first");
-    if (expectedRevision !== null && current.events.length !== expectedRevision) {
-        const error = new Error(`Canvas changed from revision ${expectedRevision} to ${current.events.length}`);
-        error.code = "STALE_REVISION";
-        error.currentRevision = current.events.length;
-        throw error;
-    }
-    const candidate = [...current.events, event].map((item, index) => ({ event: item, line: index + 1 }));
-    const candidateErrors = validateEventSequence(candidate).filter((error) => error.line === candidate.length);
-    if (candidateErrors.length) throw new Error(`Invalid event sequence: ${candidateErrors.map((error) => error.message).join("; ")}`);
-    const descriptor = fs.openSync(eventsFile, "a", 0o600);
-    try {
-      fs.writeSync(descriptor, `${JSON.stringify(event)}\n`, null, "utf8");
-      fs.fsyncSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
-    }
-    return event;
-  });
+function contentKey(value) {
+  if (Array.isArray(value)) return value.map(contentKey);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().filter(key => !["_checkpoint", "updatedAt", "actor"].includes(key) && value[key] !== undefined).map(key => [key, contentKey(value[key])]));
+}
+
+export function sameWorkContent(previous, payload) {
+  return Boolean(previous) && JSON.stringify(contentKey(previous)) === JSON.stringify(contentKey({...previous, ...payload}));
 }
 
 export function appendEvents(events, { expectedRevision = null } = {}) {
@@ -139,26 +138,42 @@ export function appendEvents(events, { expectedRevision = null } = {}) {
   }
 
   return withStoreLock(() => {
-    const current = parseStoreContent(fs.readFileSync(eventsFile, "utf8"));
-    const errors = [...current.parseErrors, ...current.validationErrors];
-    if (errors.length) throw new Error("Cannot append while the Repo Canvas store is invalid; run check and repair first");
-    if (expectedRevision !== null && current.events.length !== expectedRevision) {
-      const error = new Error(`Canvas changed from revision ${expectedRevision} to ${current.events.length}`);
-      error.code = "STALE_REVISION";
-      error.currentRevision = current.events.length;
-      throw error;
+    const current=journalState();
+    const revision=current.value.revision;
+    if(current.value.storeErrors.length)throw new Error("Cannot append while the Repo Canvas store is invalid; run check and repair first");
+    if(expectedRevision!==null && revision!==expectedRevision) {
+      const error=new Error(`Canvas changed from revision ${expectedRevision} to ${revision}`);error.code="STALE_REVISION";error.currentRevision=revision;throw error;
     }
-    const candidate = [...current.events, ...events].map((item, index) => ({ event: item, line: index + 1 }));
-    const firstNewLine = current.events.length + 1;
-    const candidateErrors = validateEventSequence(candidate).filter((error) => error.line >= firstNewLine);
-    if (candidateErrors.length) throw new Error(`Invalid event sequence: ${candidateErrors.map((error) => error.message).join("; ")}`);
-    const descriptor = fs.openSync(eventsFile, "a", 0o600);
+    const currentWork = new Map((current.raw._rawWork || current.raw.work || []).map(item => [item.id, item]));
+    let workBoundary = false;
+    events = events.filter(event => {
+      if (event.type !== "work.upsert") return true;
+      const previous = currentWork.get(event.payload.id);
+      if (sameWorkContent(previous, event.payload)) return false;
+      workBoundary ||= !previous || previous.status !== event.payload.status;
+      currentWork.set(event.payload.id, {...previous, ...event.payload});
+      return true;
+    });
+    if (!events.length) return [];
+    const candidate=events.map((event,index)=>({event,line:current.lines+index+1}));
+    const candidateErrors=validateEventSequence(candidate,current.raw,current.ids);
+    if(candidateErrors.length)throw new Error(`Invalid event sequence: ${candidateErrors.map(error=>error.message).join("; ")}`);
+    if (workBoundary || events.some(event => event.actor==="owner" || !["work.upsert", "activity.log"].includes(event.type) || event.payload.checkpoint)) {
+      const last=events.at(-1);
+      const work=events.find(event=>event.type==="work.upsert");const map=events.find(event=>event.type==="map.upsert");const verified=events.find(event=>event.payload.verification?.code);const code=verified?.payload.verification.code;
+      const category=events.some(event=>event.payload.ownerCorrection)?"decision":map?"map":work?.payload.session?"session":events.every(event=>event.type==="activity.log")?"activity":"map";
+      last.payload={...last.payload,_checkpoint:{id:"cp-"+last.id,firstRevision:revision+1,revision:revision+events.length,kind:category,recordedAt:last.ts,...(map?{title:map.payload.projectTitle||"Устройство проекта обновлено"}:{}),...(work?{sessionId:work.payload.session?.id,workId:work.payload.id,title:work.payload.title}:{}),...(code?{branch:code.branch,commit:code.commit,workingTree:Boolean(code.dirty),verification:verified.payload.verification.state}:{}),...(events.find(event=>event.payload.checkpoint)?.payload.checkpoint||{})}};
+    }
+    let separator="";
+    const size=fs.statSync(eventsFile).size;
+    if(size) {const input=fs.openSync(eventsFile,"r");const tail=Buffer.alloc(1);try{fs.readSync(input,tail,0,1,size-1);}finally{fs.closeSync(input);}if(tail[0]!==10)separator="\n";}
+    const descriptor=fs.openSync(eventsFile,"a",0o600);
     try {
-      fs.writeSync(descriptor, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, null, "utf8");
+      const bytes=Buffer.from(separator+events.map(event=>JSON.stringify(event)).join("\n")+"\n");let written=0;
+      while(written<bytes.length)written+=fs.writeSync(descriptor,bytes,written,bytes.length-written);
       fs.fsyncSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
-    }
+    }finally{fs.closeSync(descriptor);}
+    cacheAppended(events);
     return events;
   });
 }
@@ -248,145 +263,9 @@ export function repairStore({ apply = false } = {}) {
   });
 }
 
-function naturalCompare(a, b) {
-  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
-}
-
-function activityLabel(event) {
-  const payload = event.payload || {};
-  if (event.type === "map.upsert") return `Project map ${payload.projectTitle || "updated"}`;
-  if (event.type === "activity.log") return payload.message || "Activity recorded";
-  if (event.type === "area.upsert") return `Area ${payload.ownerTitle || payload.title || payload.id} updated`;
-  if (event.type === "area.remove") return `Area ${payload.id} removed: ${payload.reason || "no longer exists"}`;
-  if (event.type === "entity.upsert") return `${payload.ownerLabel || payload.label || payload.id} → ${payload.status || "updated"}`;
-  if (event.type === "entity.remove") return `Entity ${payload.id} removed: ${payload.reason || "no longer exists"}`;
-  if (event.type === "relation.upsert") return `Relation ${payload.from} → ${payload.to}`;
-  if (event.type === "relation.remove") return `Relation ${payload.id} removed`;
-  if (event.type === "work.upsert") return `Work ${payload.title || payload.id} → ${payload.status || "updated"}`;
-  return event.type;
-}
-
-export function reduceEvents(events, errors = []) {
-  let map = null;
-  const areas = new Map();
-  const entities = new Map();
-  const relations = new Map();
-  const work = new Map();
-  const activity = [];
-
-  for (const event of events) {
-    const payload = event.payload || {};
-
-    if (event.type === "map.upsert") {
-      map = { ...(map || {}), ...payload, actor: event.actor, updatedAt: event.ts };
-    }
-
-    if (event.type === "area.upsert") {
-      const id = String(payload.id);
-      areas.set(id, { ...(areas.get(id) || {}), ...payload, id, actor: event.actor, updatedAt: event.ts });
-    }
-
-    if (event.type === "area.remove") {
-      const id = String(payload.id);
-      const removedEntityIds = [];
-      areas.delete(id);
-      for (const [entityId, entity] of entities) {
-        if (entity.areaId === id) {
-          entities.delete(entityId);
-          removedEntityIds.push(entityId);
-        }
-      }
-      for (const [relationId, relation] of relations) {
-        if (removedEntityIds.includes(relation.from) || removedEntityIds.includes(relation.to)) relations.delete(relationId);
-      }
-    }
-
-    if (event.type === "entity.upsert") {
-      const id = String(payload.id);
-      entities.set(id, { ...(entities.get(id) || {}), ...payload, id, actor: event.actor, updatedAt: event.ts });
-    }
-
-    if (event.type === "entity.remove") {
-      const id = String(payload.id);
-      entities.delete(id);
-      for (const [relationId, relation] of relations) {
-        if (relation.from === id || relation.to === id) relations.delete(relationId);
-      }
-    }
-
-    if (event.type === "relation.upsert") {
-      const id = String(payload.id || `${payload.from}->${payload.to}`);
-      relations.set(id, { ...(relations.get(id) || {}), ...payload, id, actor: event.actor, updatedAt: event.ts });
-    }
-
-    if (event.type === "relation.remove") relations.delete(String(payload.id));
-
-    if (event.type === "work.upsert") {
-      const id = String(payload.id);
-      work.set(id, { ...(work.get(id) || {}), ...payload, id, actor: event.actor, updatedAt: event.ts });
-    }
-
-    activity.push({
-      id: event.id,
-      ts: event.ts,
-      actor: event.actor,
-      type: event.type,
-      level: payload.level || "info",
-      message: activityLabel(event),
-    });
-  }
-
-  const areaList = [...areas.values()].sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || naturalCompare(a.title, b.title));
-  const entityList = [...entities.values()].sort((a, b) => Number(a.order || 0) - Number(b.order || 0) || naturalCompare(a.label, b.label));
-  const relationList = [...relations.values()];
-  const entityIds = new Set(entityList.map((entity) => entity.id));
-  const workList = [...work.values()].map((item) => ({
-    ...item,
-    targets: (item.targets || []).filter((id) => entityIds.has(id)),
-  })).sort((a, b) => naturalCompare(a.title, b.title));
-  const activeWork = workList.filter((item) => ["active", "blocked", "planned"].includes(item.status));
-  const activeEntityIds = [...new Set(activeWork.filter((item) => item.status === "active").flatMap((item) => item.targets || []))];
-
-  return {
-    revision: events.length,
-    updatedAt: events.at(-1)?.ts || null,
-    parseErrors: errors.filter((error) => error.kind === "parse"),
-    validationErrors: errors.filter((error) => error.kind !== "parse"),
-    storeErrors: errors,
-    map: map || {
-      projectTitle: projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || "Project",
-      projectSummary: "",
-      language: "",
-      layoutIntent: "domain",
-      layoutDirection: "AUTO",
-      keyFlows: [],
-      unresolvedQuestions: [],
-    },
-    areas: areaList,
-    entities: entityList,
-    relations: relationList,
-    work: workList,
-    activeEntityIds,
-    semantic: areaList.length > 0 || entityList.length > 0,
-    activity: activity.slice(-80).reverse(),
-    summary: {
-      areaCount: areaList.length,
-      entityCount: entityList.length,
-      activeWork: activeWork.filter((item) => item.status === "active").length,
-      agents: [...new Set(events.map((event) => event.actor).filter(Boolean))],
-    },
-  };
-}
-
-let snapshotCache = null;
 
 export function getSnapshot() {
   ensureStoreUnlocked();
-  const stat = fs.statSync(eventsFile);
-  const signature = `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
-  if (snapshotCache?.signature === signature) return snapshotCache.value;
-  const { events, errors } = readEvents();
-  const value = reduceEvents(events, errors);
-  snapshotCache = { signature, value };
-  return value;
+  const cached=cachedSnapshot();if(cached)return cached;
+  return withStoreLock(()=>journalState().value);
 }

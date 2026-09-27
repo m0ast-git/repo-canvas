@@ -25,6 +25,44 @@ export function currentWork(snapshot, now = Date.now()) {
   return (snapshot?.work || []).filter((work) => isCurrentWork(work, now));
 }
 
+// Freshness and execution are separate: a recently planned/blocked task is
+// visible, but does not mean somebody is working on its targets right now.
+export function activeWorkRollup(snapshot, now = Date.now()) {
+  const byId = new Map((snapshot.entities || []).map(entity => [entity.id, entity]));
+  const entities = new Map(), areas = new Map();
+  for (const work of currentWork(snapshot, now).filter(item => item.status === "active")) {
+    const workEntities = new Set(), workAreas = new Set();
+    for (const target of work.targets || []) {
+      let current = byId.get(target);
+      const seen = new Set();
+      while (current && !seen.has(current.id) && current.kind !== "person") {
+        seen.add(current.id); workEntities.add(current.id);
+        if (current.areaId) workAreas.add(current.areaId);
+        current = byId.get(current.parentId);
+      }
+    }
+    for (const id of workEntities) entities.set(id, (entities.get(id) || 0) + 1);
+    for (const id of workAreas) areas.set(id, (areas.get(id) || 0) + 1);
+  }
+  return { entities, areas };
+}
+
+// Areas describe ownership, not a second implementation inventory. An area
+// whose entire known contents are planned is planned; mixed/empty areas are not.
+export function areaImplementationStatuses(snapshot) {
+  const members = new Map();
+  for (const entity of snapshot.entities || []) {
+    if (!entity.areaId || entity.kind === "person") continue;
+    const state = members.get(entity.areaId) || { total: 0, planned: 0 };
+    state.total++; if (entity.status === "planned") state.planned++;
+    members.set(entity.areaId, state);
+  }
+  return new Map((snapshot.areas || []).map(area => {
+    const state = members.get(area.id);
+    return [area.id, area.status === "planned" || (state?.total > 0 && state.planned === state.total) ? "planned" : "existing"];
+  }));
+}
+
 export function graphHierarchy(snapshot) {
   const direct = new Map();
   for (const entity of snapshot?.entities || []) {

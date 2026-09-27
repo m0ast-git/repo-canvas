@@ -131,6 +131,17 @@ if (args.root === true) {
       // The active project-local runtime handled the command.
     } else if (command === "help" || command === "--help" || command === "-h") {
       printHelp();
+    } else if (command === "mcp") {
+      const {startContextServer}=await import("./mcp-server.mjs");await startContextServer();
+    } else if (command === "hook") {
+      const {ingestAgentHook,readHookInput}=await import("./agent-hooks.mjs");ingestAgentHook(await readHookInput());
+    } else if (command === "evaluate") {
+      const {evaluateMap}=await import("./map-evaluation.mjs");console.log(JSON.stringify(await evaluateMap({baselineId:typeof args.baseline==="string"?args.baseline:"",maxTokens:Number(args["max-tokens"])||80000}),null,2));
+    } else if (command === "skeleton") {
+      const {createSkeleton}=await import("./skeleton-map.mjs");
+      const {projectRoot}=await import("./project-root.mjs");console.log(JSON.stringify(createSkeleton(projectRoot),null,2));
+    } else if (command === "compact-cache") {
+      const {compactHistoryCache}=await import("./canvas-history.mjs");console.log(JSON.stringify(compactHistoryCache({apply:Boolean(args.apply)}),null,2));
     } else if (command === "start" || command === "serve") {
       if (args.port !== undefined) process.env.CANVAS_PORT = String(args.port);
       if (args.host !== undefined) process.env.CANVAS_HOST = String(args.host);
@@ -140,17 +151,20 @@ if (args.root === true) {
       const { runInit } = await import("./canvas-init.mjs");
       runInit({
         upgrade: Boolean(args.upgrade),
+        projectInstall:Boolean(args["project-install"]),
         installSpec: args["install-spec"] && args["install-spec"] !== true ? String(args["install-spec"]) : null,
       });
     } else if (command === "doctor") {
-      const { probeCodex } = await import("./model-runtime.mjs");
-      const result = await probeCodex({ cwd: process.env.REPO_CANVAS_ROOT || process.cwd() });
+      const { probeModel } = await import("./model-providers.mjs");
+      const result = await probeModel({ cwd: process.env.REPO_CANVAS_ROOT || process.cwd(), provider: typeof args.provider === "string" ? args.provider : undefined });
       console.log(JSON.stringify(result, null, 2));
       if (result.status !== "connected") process.exitCode = 1;
     } else if (command === "architect") {
       const { runArchitect } = await import("./architect.mjs");
+      if(typeof args.provider==="string"){if(!["codex","claude","kimi"].includes(args.provider))throw new Error("Unknown model provider");const {writeRuntimeConfig}=await import("./runtime-config.mjs");writeRuntimeConfig({modelProvider:args.provider,allowedModelProviders:[args.provider]});}
       const result = await runArchitect({
         refresh: Boolean(args.refresh),
+        viewpoint:typeof args.viewpoint==="string"?args.viewpoint:"",
         language: args.language && args.language !== true ? String(args.language) : undefined,
         model: args.model && args.model !== true ? String(args.model) : undefined,
         effort: args.effort && args.effort !== true ? String(args.effort) : undefined,
@@ -158,7 +172,7 @@ if (args.root === true) {
       console.log(JSON.stringify(result, null, 2));
     } else if (command === "setup") {
       const { runInit } = await import("./canvas-init.mjs");
-      const { probeCodex } = await import("./model-runtime.mjs");
+      const { probeModel } = await import("./model-providers.mjs");
       const { runArchitect } = await import("./architect.mjs");
       const { getSnapshot } = await import("./canvas-store.mjs");
       const { writeRuntimeConfig } = await import("./runtime-config.mjs");
@@ -166,8 +180,9 @@ if (args.root === true) {
         upgrade: Boolean(args.upgrade),
         installSpec: args["install-spec"] && args["install-spec"] !== true ? String(args["install-spec"]) : null,
       });
-      const probe = await probeCodex({ cwd: process.env.REPO_CANVAS_ROOT || process.cwd() });
-      if (probe.status !== "connected") throw new Error(`Codex subscription is not available: ${probe.error || "probe failed"}`);
+      if(typeof args.provider === "string") writeRuntimeConfig({modelProvider:args.provider,allowedModelProviders:[args.provider]});
+      const probe = await probeModel({ cwd: process.env.REPO_CANVAS_ROOT || process.cwd(), provider: typeof args.provider === "string" ? args.provider : undefined });
+      if (probe.status !== "connected") throw new Error(`Model connection is not available: ${probe.error || "probe failed"}`);
       let architect = null;
       if (!getSnapshot().semantic || args.refresh) {
         architect = await runArchitect({

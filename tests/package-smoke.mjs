@@ -114,6 +114,8 @@ try {
 
   const installedCli = path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "canvas.mjs");
   assert.ok(fs.existsSync(installedCli), "CLI source missing from packed artifact");
+  const sourceModule=path.join(path.dirname(installedCli),"project-sources.mjs");
+  run(process.execPath,["--input-type=module","-e",`import {pathToFileURL} from 'node:url'; const {codeExcerpt}=await import(pathToFileURL(${JSON.stringify(sourceModule)})); const result=codeExcerpt('a.py#Second.run',Buffer.from('class Second:\\n  def run(self):\\n    return True\\n')); if(result.error||!result.text.includes('return True'))throw Error(result.error||'Packaged grammar unavailable');`],root);
   assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "claude-sessions.mjs")));
   assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "repo-canvas", "scripts", "kimi-sessions.mjs")));
   assert.ok(fs.existsSync(path.join(root, "node_modules", ".bin", process.platform === "win32" ? "repo-canvas.cmd" : "repo-canvas")));
@@ -129,10 +131,13 @@ try {
   const libavoidWasm = packedAssets.find((name) => name.startsWith("libavoid-") && name.endsWith(".wasm"));
   assert.ok(libavoidWasm, "Packed libavoid WASM runtime missing");
   assert.ok(fs.existsSync(path.join(root, "node_modules", "repo-canvas", "THIRD_PARTY_NOTICES.md")), "Third-party routing notice missing");
+  const externalManifest = fs.readFileSync(path.join(root, "package.json"));
   run(process.execPath, [installedCli, "init"], root);
+  assert.deepEqual(fs.readFileSync(path.join(root, "package.json")), externalManifest, "External init changed package.json");
+  run(process.execPath, [installedCli, "init", "--project-install"], root);
   const managedFiles = ["package.json", "package-lock.json", "AGENTS.md", ".gitignore", ".codex/hooks.json"];
   const firstHash = hashFiles(root, managedFiles);
-  run(process.execPath, [installedCli, "init"], root);
+  run(process.execPath, [installedCli, "init", "--project-install"], root);
   assert.equal(hashFiles(root, managedFiles), firstHash, "Second init changed managed files");
   assert.deepEqual(fs.readFileSync(path.join(root, "AGENTS.md")), ownerAgents, "init changed owner AGENTS.md");
   assert.deepEqual(fs.readFileSync(path.join(root, ".codex", "hooks.json")), ownerHooks, "init changed owner hooks");
@@ -191,7 +196,7 @@ try {
   fs.writeFileSync(conflictManifest, `${JSON.stringify(conflictPackage, null, 2)}\n`);
   const beforeConflict = fs.readFileSync(conflictManifest);
   const conflictCli = path.join(conflictRoot, "node_modules", "repo-canvas", "repo-canvas", "scripts", "canvas.mjs");
-  const failed = run(process.execPath, [conflictCli, "init"], conflictRoot, { expectFailure: true });
+  const failed = run(process.execPath, [conflictCli, "init", "--project-install"], conflictRoot, { expectFailure: true });
   assert.match(failed.stderr, /script 'repo-canvas'/);
   assert.deepEqual(fs.readFileSync(conflictManifest), beforeConflict);
   assert.ok(!fs.existsSync(path.join(conflictRoot, "AGENTS.md")));

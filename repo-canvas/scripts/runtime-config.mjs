@@ -51,15 +51,27 @@ export function readRuntimeConfig() {
     const parsed = JSON.parse(fs.readFileSync(runtimeConfigFile, "utf8"));
     return {
       enabled: parsed.enabled === true,
-      repoRoot: fs.realpathSync.native(parsed.repoRoot || projectRoot),
+      repoRoot: fs.realpathSync.native(parsed.repoRoot && fs.existsSync(parsed.repoRoot) ? parsed.repoRoot : projectRoot),
+      projectAliases: [...new Set([...(Array.isArray(parsed.projectAliases)?parsed.projectAliases:[]),...(parsed.repoRoot && !fs.existsSync(parsed.repoRoot)?[parsed.repoRoot]:[])])],
       providers: Array.isArray(parsed.providers) && parsed.providers.length
         ? [...new Set(parsed.providers.map(String))]
         : [parsed.provider || "codex"],
       pollMs: Math.max(250, Number(parsed.pollMs) || 750),
+      modelProvider: parsed.modelProvider || "",
+      allowedModelProviders: Array.isArray(parsed.allowedModelProviders) ? parsed.allowedModelProviders : [],
+      modelPool: Array.isArray(parsed.modelPool) ? parsed.modelPool : [],
+      maxModelCalls: Math.max(1, Number(parsed.maxModelCalls) || 14),
+      maxModelTokens: Math.max(1000, Number(parsed.maxModelTokens) || 300000),
+      backgroundMaxCallsPerHour: Math.max(1, Number(parsed.backgroundMaxCallsPerHour) || 60),
+      backgroundMaxTokensPerDay: Math.max(1000, Number(parsed.backgroundMaxTokensPerDay) || 300000),
+      observerFinalAttempts: Math.max(1, Math.min(10, Number(parsed.observerFinalAttempts) || 3)),
+      observerMode: parsed.observerMode === "continuous" ? "continuous" : "turn",
+      dialogSources: parsed.dialogSources !== false,
+      excludedSourceFiles: Array.isArray(parsed.excludedSourceFiles) ? parsed.excludedSourceFiles : [],
     };
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    return { enabled: false, repoRoot: fs.realpathSync.native(projectRoot), providers: ["codex", "claude", "kimi"], pollMs: 750 };
+    return { enabled: false, repoRoot: fs.realpathSync.native(projectRoot), providers: ["codex", "claude", "kimi"], pollMs: 750,observerMode:"turn" };
   }
 }
 

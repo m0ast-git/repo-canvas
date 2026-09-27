@@ -1,3 +1,7 @@
+import {separateParallelRoutes} from "./route-clearance.js";
+import {graphWithConnectionPorts} from "./connection-ports.js";
+import {protectRouteHeaders} from "./protected-routes.js";
+
 function sameRect(left, right) {
   return Math.abs(left.x - right.x) < .01
     && Math.abs(left.y - right.y) < .01
@@ -54,8 +58,7 @@ export function createRoutingScope({ id, edges = [], boxes = new Map(), obstacle
     edgeIds: new Set(scopedEdges.map((edge) => edge.id)),
     graph: {
       id,
-      children: [...nodes.values()],
-      edges: scopedEdges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
+      ...graphWithConnectionPorts([...nodes.values()], scopedEdges),
     },
   };
 }
@@ -66,6 +69,7 @@ export function routingMovesForScope(scope, moves = []) {
     if (!Number.isFinite(move?.x) || !Number.isFinite(move?.y)) continue;
     for (const binding of scope.bindings.get(String(move.id || "")) || []) {
       if (!scope.nodes.has(binding.nodeId)) continue;
+      const current=scope.nodes.get(binding.nodeId);if(!move.force&&Math.abs(current.x-(move.x+binding.offsetX))<.01&&Math.abs(current.y-(move.y+binding.offsetY))<.01)continue;
       resolved.set(binding.nodeId, {
         id: binding.nodeId,
         x: move.x + binding.offsetX,
@@ -82,6 +86,9 @@ export function applyRoutingMoves(scope, moves = []) {
     const node = scope.nodes.get(move.id);
     node.x = move.x;
     node.y = move.y;
+    // A later session rebuild must start from the same geometry as live moves.
+    const graphNode=scope.graph.children.find(item=>item.id===move.id);
+    if(graphNode){graphNode.x=move.x;graphNode.y=move.y;}
   }
   return resolved;
 }
@@ -93,18 +100,36 @@ export function routingResultsComplete(scope, results) {
 }
 
 export function routesFromRoutingResults(scope, results) {
-  return scope.edges.map((edge) => {
+  const graphEdges=new Map(scope.graph.edges.map(edge=>[edge.id,edge]));
+  const ports=new Map(scope.graph.children.flatMap(node=>(node.ports||[]).map(port=>[port.id,{...port,nodeId:node.id}])));
+  const resolvePort=id=>{const port=ports.get(id),node=port&&scope.nodes.get(port.nodeId);return node?{x:node.x+port.x,y:node.y+port.y,side:port.properties['port.side']}:null;};
+  const routes = scope.edges.map((edge) => {
     const route = results.get(edge.id);
     if (!route) return null;
     const source = scope.nodes.get(edge.source);
     const target = scope.nodes.get(edge.target);
+    let points=[route.sourcePoint, ...(route.bendPoints || []), route.targetPoint];
+    const graphEdge=graphEdges.get(edge.id),start=resolvePort(graphEdge?.sourcePort),end=resolvePort(graphEdge?.targetPort);
+    const invalid=points.some((point,i)=>i&&Math.abs(point.x-points[i-1].x)>.1&&Math.abs(point.y-points[i-1].y)>.1)
+      || start&&Math.hypot(points[0].x-start.x,points[0].y-start.y)>.5
+      || end&&Math.hypot(points.at(-1).x-end.x,points.at(-1).y-end.y)>.5;
+    if(invalid&&start&&end){
+      const stub=port=>({x:port.x+(port.side==='EAST'?24:port.side==='WEST'?-24:0),y:port.y+(port.side==='SOUTH'?24:port.side==='NORTH'?-24:0)});
+      const a=stub(start),b=stub(end);
+      const fallback={...edge,points:[{x:start.x,y:start.y},a,{x:a.x,y:b.y},b,{x:end.x,y:end.y}]};
+      // libavoid can return a straight centre-to-centre fallback without throwing.
+      // Repair that result before it reaches SVG, retaining the allocated ports.
+      points=protectRouteHeaders(fallback,[],[...scope.nodes.values()]).points;
+    }
     return {
       ...edge,
       sourceBase: { x: source.x, y: source.y },
       targetBase: { x: target.x, y: target.y },
-      points: [route.sourcePoint, ...(route.bendPoints || []), route.targetPoint],
+      points,
       sourceSide: route.sourceSide,
       targetSide: route.targetSide,
     };
   }).filter(Boolean);
+  const obstacles=[...scope.nodes.values()];
+  return separateParallelRoutes(routes,obstacles).map(route=>protectRouteHeaders(route,[],obstacles));
 }

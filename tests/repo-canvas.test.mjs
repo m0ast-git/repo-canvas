@@ -29,14 +29,17 @@ test("Codex runtime resolves Windows, macOS, and Linux without a shell wrapper",
   const args = codexCommandArguments({ cwd: "/fixture", profile: { model: "test-model", effort: "medium" }, schemaPath: "/schema.json" });
   assert.ok(args.includes("mcp_servers={}"));
   assert.ok(args.includes("project_doc_max_bytes=0"));
-  for (const feature of ["apps", "browser_use", "computer_use", "hooks", "memories", "multi_agent", "plugins", "skill_search"]) assert.ok(args.includes(feature));
+  for (const feature of ["apps", "browser_use", "computer_use", "hooks", "memories", "multi_agent", "plugins"]) assert.ok(args.includes(feature));
   const resumed = codexResumeCommandArguments({ threadId: "019f-session", profile: { model: "test-model", effort: "medium" }, schemaPath: "/schema.json" });
   assert.deepEqual(resumed.slice(0, 3), ["exec", "resume", "--json"]);
   assert.equal(resumed.at(-2), "019f-session");
   assert.equal(resumed.at(-1), "-");
   assert.ok(resumed.includes("/schema.json"));
-  assert.equal(MODEL_PROFILES.observer.model, process.env.REPO_CANVAS_OBSERVER_MODEL || "gpt-5.6-luna");
-  assert.equal(MODEL_PROFILES.reviewer.model, process.env.REPO_CANVAS_REVIEWER_MODEL || "gpt-5.6-luna");
+  assert.equal(typeof MODEL_PROFILES.observer.model, "string");
+  assert.equal(typeof MODEL_PROFILES.reviewer.model, "string");
+  if(process.env.REPO_CANVAS_OBSERVER_MODEL) assert.equal(MODEL_PROFILES.observer.model,process.env.REPO_CANVAS_OBSERVER_MODEL);
+  assert.ok(args.includes("shell_tool") && args.includes("unified_exec"));
+  assert.ok(!codexCommandArguments({cwd:"/fixture",profile:{model:"",effort:"low"},schemaPath:"/schema.json"}).includes("--model"));
   assert.deepEqual(codexProcessOptions({ SAFE: "1" }), { env: { SAFE: "1" }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 });
 
@@ -487,7 +490,13 @@ test("loopback server guards navigation, reports port collision, and stops", asy
   const movedAcross = crossArea.json.state.entities.find((item) => item.id === "module");
   assert.equal(movedAcross.areaId, "target");
   assert.equal(movedAcross.parentId, "");
-  const restoreAreaPayload = JSON.stringify({ canvasRevision: crossArea.json.revision, items: [{ kind: "entity", id: "module", x: 280, y: 360, areaId: "core", parentId: "container" }] });
+  const freePayload=JSON.stringify({canvasRevision:crossArea.json.revision,items:[{kind:'entity',id:'module',x:1700,y:900,areaId:'',parentId:''}]});
+  const freed=await request(port,{method:'POST',path:'/api/layout',headers:{...commonHeaders,'Content-Length':Buffer.byteLength(freePayload),Origin:`http://127.0.0.1:${port}`},body:freePayload});
+  assert.equal(freed.status,201,freed.text);
+  const freeState=await request(port,{path:'/api/state',headers:authHeaders});
+  const freeEntity=freeState.json.entities.find(item=>item.id==='module');
+  assert.equal(freeEntity.areaId,'');assert.equal(freeEntity.ownerAreaId,'');assert.equal(freeEntity.x,1700);
+  const restoreAreaPayload = JSON.stringify({ canvasRevision: freed.json.revision, items: [{ kind: "entity", id: "module", x: 280, y: 360, areaId: "core", parentId: "container" }] });
   const restoredArea = await request(port, {
     method: "POST", path: "/api/layout",
     headers: { ...commonHeaders, "Content-Length": Buffer.byteLength(restoreAreaPayload), Origin: `http://127.0.0.1:${port}` }, body: restoreAreaPayload,
@@ -618,7 +627,7 @@ test("architect status survives a restart and interrupted work is explicit", asy
   await waitForOutput(server, /listening at/);
   const interrupted = await request(port, { path: "/api/architect/status", headers });
   assert.equal(interrupted.json.status, "failed");
-  assert.match(interrupted.json.error, /прерван перезапуском/);
+  assert.match(interrupted.json.error, /прервано остановкой сервера/);
   assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).status, "failed");
   server.kill("SIGTERM");
   await waitForExit(server, 2_500);

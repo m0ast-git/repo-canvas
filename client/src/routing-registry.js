@@ -1,3 +1,5 @@
+export const ROUTING_VERSION = 17;
+
 import {
   applyRoutingMoves,
   routesFromRoutingResults,
@@ -5,9 +7,10 @@ import {
 } from "./routing-scopes.js";
 
 export class RoutingRegistry {
-  constructor({ createSession, routeOnce, onError = () => {} } = {}) {
+  constructor({ createSession, routeOnce, convertResults = routesFromRoutingResults, onError = () => {} } = {}) {
     this.createSession = createSession;
     this.routeOnce = routeOnce;
+    this.convertResults = convertResults;
     this.onError = onError;
     this.entries = new Map();
     this.generation = 0;
@@ -57,7 +60,7 @@ export class RoutingRegistry {
       if (!routingResultsComplete(scope, results)) {
         throw new Error(`Routing scope ${scope.id} returned an incomplete initial route set`);
       }
-      entry.routes = routesFromRoutingResults(scope, results);
+      entry.routes = this.convertResults(scope, results);
       return entry;
     } catch (error) {
       this.destroyEntry(entry);
@@ -82,6 +85,12 @@ export class RoutingRegistry {
     return this.routes();
   }
 
+  restore(scopes=[],routes=[]) {
+    this.destroy();const byId=new Map(routes.map(route=>[route.id,route]));
+    for(const scope of scopes.filter(item=>item.edges.length))this.entries.set(scope.id,{scope,routes:scope.edges.map(edge=>byId.get(edge.id)).filter(Boolean),session:null,retry:false,restored:true});
+    return routes;
+  }
+
   async rebuild(entry, error) {
     this.metrics.rebuilds += 1;
     this.destroyEntry(entry);
@@ -95,7 +104,8 @@ export class RoutingRegistry {
     const updates = [];
     for (const original of [...this.entries.values()]) {
       const scopedMoves = applyRoutingMoves(original.scope, moves);
-      if (!scopedMoves.length) continue;
+      const existingIds=new Set(original.routes.map(route=>route.id));const missing=original.scope.edges.filter(edge=>!existingIds.has(edge.id));
+      if (!scopedMoves.length&&!missing.length) continue;
       let entry = original;
       if (!entry.session || entry.retry) {
         entry = await this.rebuild(entry, new Error(`Routing scope ${entry.scope.id} requires a session retry`));
@@ -109,7 +119,7 @@ export class RoutingRegistry {
         entry.lastTransactionMs = performance.now() - startedAt;
         this.metrics.transactions += 1;
         if (!routingResultsComplete(entry.scope, results)) throw new Error(`Routing scope ${entry.scope.id} returned an incomplete route set`);
-        entry.routes = routesFromRoutingResults(entry.scope, results);
+        entry.routes = this.convertResults(entry.scope, results);
         entry.retry = false;
         updates.push(...entry.routes);
       } catch (error) {

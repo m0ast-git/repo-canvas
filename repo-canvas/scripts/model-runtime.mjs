@@ -1,22 +1,26 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
+function configuredCodexModel() {
+  try { return readFileSync(path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml"), "utf8").split(/^\[/m)[0].match(/^model\s*=\s*"([^"]+)"/m)?.[1] || ""; } catch { return ""; }
+}
+const configuredModel = configuredCodexModel();
 export const MODEL_PROFILES = Object.freeze({
   architect: Object.freeze({
-    model: process.env.REPO_CANVAS_ARCHITECT_MODEL || "gpt-5.6-sol",
+    model: process.env.REPO_CANVAS_ARCHITECT_MODEL || configuredModel,
     effort: process.env.REPO_CANVAS_ARCHITECT_EFFORT || "medium",
   }),
   observer: Object.freeze({
-    model: process.env.REPO_CANVAS_OBSERVER_MODEL || "gpt-5.6-luna",
+    model: process.env.REPO_CANVAS_OBSERVER_MODEL || configuredModel,
     effort: process.env.REPO_CANVAS_OBSERVER_EFFORT || "low",
   }),
   reviewer: Object.freeze({
-    model: process.env.REPO_CANVAS_REVIEWER_MODEL || "gpt-5.6-luna",
+    model: process.env.REPO_CANVAS_REVIEWER_MODEL || configuredModel,
     effort: process.env.REPO_CANVAS_REVIEWER_EFFORT || "low",
   }),
 });
@@ -47,17 +51,33 @@ export function codexTarget(platform = process.platform, arch = process.arch) {
 
 export function resolveCodexExecutable(platform = process.platform, arch = process.arch) {
   const target = codexTarget(platform, arch);
+  for(const directory of (process.env.PATH||"").split(path.delimiter)) {
+    const direct=path.join(directory,target.binaryName);if(existsSync(direct))return direct;
+    const globalBinary=path.join(directory,"node_modules",target.packageName,"vendor",target.targetTriple,"bin",target.binaryName);
+    if(existsSync(globalBinary))return globalBinary;
+    const nestedBinary=path.join(directory,"node_modules","@openai","codex","node_modules",target.packageName,"vendor",target.targetTriple,"bin",target.binaryName);
+    if(existsSync(nestedBinary))return nestedBinary;
+  }
   let packagePath;
   try {
     packagePath = require.resolve(`${target.packageName}/package.json`);
   } catch {
-    throw new Error(`Codex runtime package is missing: ${target.packageName}`);
+    throw new Error("Codex CLI не найден. Установите его отдельно: npm install -g @openai/codex, затем выполните codex login.");
   }
   const executable = path.join(path.dirname(packagePath), "vendor", target.targetTriple, "bin", target.binaryName);
   if (!existsSync(executable)) throw new Error(`Codex executable is missing: ${executable}`);
   return executable;
 }
 
+const modelProcesses = new Set();
+export function trackModelProcess(child) { modelProcesses.add(child); return () => modelProcesses.delete(child); }
+export function stopModelProcesses() {
+  for (const child of modelProcesses) {
+    if (!child.pid) continue;
+    if (process.platform === "win32") spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
+    else child.kill();
+  }
+}
 function timeoutSignal(timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -83,7 +103,11 @@ export async function createIsolatedCodexHome(sourceHome = process.env.CODEX_HOM
   const sourceAuth = path.join(sourceHome, "auth.json");
   try { await fs.access(sourceAuth); }
   catch { throw new Error(`Codex subscription authentication was not found: ${sourceAuth}`); }
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "repo-canvas-codex-"));
+  // Codex's Windows helper binaries refuse homes under the OS temporary folder.
+  // Keep isolation outside the repository and outside TEMP; each session still cleans up.
+  const runRoot=path.join(process.env.LOCALAPPDATA||path.join(os.homedir(),".cache"),"RepoCanvas","codex-runs");
+  await fs.mkdir(runRoot,{recursive:true,mode:0o700});
+  const directory = await fs.mkdtemp(path.join(runRoot, "session-"));
   const linkedAuth = path.join(directory, "auth.json");
   try {
     try { await fs.link(sourceAuth, linkedAuth); }
@@ -103,28 +127,28 @@ function isolatedCodexEnvironment(codexHome) {
 
 export function codexCommandArguments({ cwd, profile, schemaPath }) {
   return [
-    "exec", "--experimental-json", "--model", profile.model, "--sandbox", "read-only", "--cd", cwd,
+    "exec", "--experimental-json", ...(profile.model ? ["--model", profile.model] : []), "--sandbox", "read-only", "--cd", cwd,
     "--skip-git-repo-check", "--output-schema", schemaPath,
     "--config", `model_reasoning_effort=${JSON.stringify(profile.effort)}`,
     "--config", "web_search=\"disabled\"", "--config", "approval_policy=\"never\"",
     "--config", "mcp_servers={}", "--config", "project_doc_max_bytes=0",
     "--disable", "apps", "--disable", "browser_use", "--disable", "computer_use",
     "--disable", "hooks", "--disable", "memories", "--disable", "multi_agent",
-    "--disable", "plugins", "--disable", "skill_search",
+    "--disable", "plugins", "--disable", "shell_tool", "--disable", "unified_exec",
   ];
 }
 
 export function codexResumeCommandArguments({ threadId, profile, schemaPath }) {
   if (!threadId) throw new Error("A Codex thread id is required to resume a structured session");
   return [
-    "exec", "resume", "--json", "--model", profile.model,
+    "exec", "resume", "--json", ...(profile.model ? ["--model", profile.model] : []),
     "--skip-git-repo-check", "--output-schema", schemaPath,
     "--config", `model_reasoning_effort=${JSON.stringify(profile.effort)}`,
     "--config", "web_search=\"disabled\"", "--config", "approval_policy=\"never\"",
     "--config", "mcp_servers={}", "--config", "project_doc_max_bytes=0",
     "--disable", "apps", "--disable", "browser_use", "--disable", "computer_use",
     "--disable", "hooks", "--disable", "memories", "--disable", "multi_agent",
-    "--disable", "plugins", "--disable", "skill_search",
+    "--disable", "plugins", "--disable", "shell_tool", "--disable", "unified_exec",
     threadId, "-",
   ];
 }
@@ -177,11 +201,12 @@ export async function runCodexStructured({
   cwd,
   prompt,
   outputSchema,
-  timeoutMs = role === "architect" ? 30 * 60_000 : 90_000,
+  timeoutMs = role === "architect" ? 30 * 60_000 : role === "observer" ? 90_000 : 8 * 60_000,
   profile = MODEL_PROFILES[role],
   onProgress,
   executable = resolveCodexExecutable(),
   session = null,
+  signal,
 }) {
   if (!profile) throw new Error(`Unknown model role '${role}'`);
   if (session?.closed) throw new Error("Codex structured session is already closed");
@@ -199,8 +224,9 @@ export async function runCodexStructured({
       ? codexResumeCommandArguments({ threadId: session.threadId, profile, schemaPath: schema.schemaPath })
       : codexCommandArguments({ cwd, profile, schemaPath: schema.schemaPath });
     child = spawn(session?.executable || executable, command, {
-      ...codexProcessOptions(isolatedCodexEnvironment(codexHome.directory)), signal: controller.signal,
+      ...codexProcessOptions(isolatedCodexEnvironment(codexHome.directory)), signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
     });
+    modelProcesses.add(child);
     report(onProgress, { phase: "starting", eventType: "process.started", pid: child.pid || null, resumed: resuming });
     const stderr = [];
     let stderrBytes = 0;
@@ -209,11 +235,14 @@ export async function runCodexStructured({
       const bounded = Buffer.from(chunk).subarray(0, 1024 * 1024 - stderrBytes);
       stderr.push(bounded); stderrBytes += bounded.length;
     });
-    const exit = new Promise((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", (code, signal) => resolve({ code, signal }));
+    // stdout is consumed before awaiting this outcome. Rejecting here would be
+    // an unhandled rejection while the stream is still closing after an abort.
+    const exit = new Promise((resolve) => {
+      child.once("error", error => resolve({ error }));
+      child.once("close", (code, signal) => resolve({ code, signal }));
     });
     if (!child.stdin || !child.stdout) throw new Error("Codex process did not expose stdio");
+    child.stdin.on("error", () => {});
     child.stdin.end(prompt, "utf8");
     lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
     let finalResponse = "";
@@ -225,14 +254,18 @@ export async function runCodexStructured({
       let event;
       try { event = JSON.parse(line); }
       catch { throw new Error("Codex emitted an invalid JSON event"); }
-      report(onProgress, { phase: progressPhase(event), eventType: event.type });
+      const reconnecting=event.type==="error"&&/^Reconnecting/i.test(event.message||event.error?.message||"");
+      report(onProgress, { phase: progressPhase(event), eventType: reconnecting?"connection.retrying":event.type });
       if (event.type === "thread.started") threadId = event.thread_id || null;
       if (event.type === "item.completed" && event.item?.type === "agent_message") finalResponse = event.item.text || "";
-      if (event.type === "turn.completed") usage = event.usage || null;
+      // A reconnect error is provisional. A completed turn supersedes it;
+      // fatal turn.failed or a nonzero process exit still fails below.
+      if (event.type === "turn.completed") {usage = event.usage || null;failure=null;}
       if (event.type === "turn.failed") failure = event.error?.message || "Codex turn failed";
       if (event.type === "error") failure = event.message || event.error?.message || "Codex runtime error";
     }
     const outcome = await exit;
+    if (outcome.error) throw outcome.error;
     if (failure) throw new Error(failure);
     if (outcome.code !== 0 || outcome.signal) {
       const detail = outcome.signal ? `signal ${outcome.signal}` : `code ${outcome.code ?? 1}`;
@@ -250,6 +283,7 @@ export async function runCodexStructured({
     throw error;
   } finally {
     clear(); lines?.close();
+    modelProcesses.delete(child);
     try { if (child && !child.killed) child.kill(); } catch { /* process already ended */ }
     await schema.cleanup();
     if (!session) await codexHome?.cleanup();

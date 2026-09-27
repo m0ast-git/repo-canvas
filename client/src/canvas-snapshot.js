@@ -1,3 +1,11 @@
+export function layoutExpectation(snapshot, items) {
+  const collections = { area: snapshot.areas, entity: snapshot.entities, work: snapshot.work };
+  return items.map(({ kind, id, ...patch }) => {
+    const current = (collections[kind] || []).find(item => item.id === id) || {};
+    return { kind, id, values: Object.fromEntries(Object.keys(patch).map(key => [key, current[key] ?? null])) };
+  });
+}
+
 export function patchSnapshotPositions(snapshot, items, revision) {
   if (!snapshot) return snapshot;
   const positions = new Map(items.map((item) => [`${item.kind}:${item.id}`, item]));

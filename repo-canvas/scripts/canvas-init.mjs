@@ -85,10 +85,18 @@ function packageDependencySpec(projectPackage, packageName) {
   return projectPackage.devDependencies?.[packageName] || projectPackage.dependencies?.[packageName] || null;
 }
 
-export function runInit({ upgrade = false, installSpec = null } = {}) {
+export function runInit({ upgrade = false, installSpec = null, projectInstall=false } = {}) {
   const packageManifest = path.join(packageRoot, "package.json");
   const projectManifest = path.join(projectRoot, "package.json");
   const packageInfo = readJson(packageManifest, "Repo Canvas package manifest");
+  if(!projectInstall) {
+    ensureStore();
+    const snapshot=getSnapshot();if(snapshot.storeErrors.length)throw new Error("Журнал проекта требует восстановления");
+    const git=spawnSync("git",["rev-parse","--git-path","info/exclude"],{cwd:projectRoot,encoding:"utf8",windowsHide:true});
+    if(git.status===0){const exclude=path.resolve(projectRoot,git.stdout.trim());const existing=readText(exclude)||"";if(!existing.split(/\r?\n/).includes(".repo-canvas/"))atomicWrite(exclude,`${existing.trimEnd()}\n.repo-canvas/\n`);}
+    console.log(`Repo Canvas: ${projectRoot}\nNext: repo-canvas start`);
+    return {root:projectRoot,changed:[],version:packageInfo.version,installation:"external"};
+  }
   let projectPackage = readJson(projectManifest, "Project package.json");
   const conflicts = [];
 

@@ -1,3 +1,5 @@
+import { NODE_READABLE_ZOOM } from "./viewport-geometry.js";
+
 export function rectanglesOverlap(a, b, gap = 0) {
   return a.x - gap < b.x + b.width
     && a.x + a.width + gap > b.x
@@ -5,9 +7,11 @@ export function rectanglesOverlap(a, b, gap = 0) {
     && a.y + a.height + gap > b.y;
 }
 
-export function routeLabelScale(zoom) {
+export const ROUTE_LABEL_FONT_SIZE = 12;
+
+export function routeLabelScale(zoom, overview = false) {
   const safeZoom = Math.max(.025, Number(zoom || 0));
-  return Math.min(1.45, Math.max(1, 1 / safeZoom));
+  return overview ? Math.min(24, 1 / safeZoom) : 1;
 }
 
 function labelCandidates(points, width) {
@@ -41,52 +45,29 @@ export function placeRouteLabels(routes, viewport, size, obstacles) {
   const result = new Map();
 
   for (const route of routes.filter((item) => item.label)) {
-    const width = Math.min(200, Math.max(72, route.label.length * 5.2 + 20));
-    const height = 24;
-    const scale = routeLabelScale(viewport.zoom);
+    const overview = viewport.zoom < NODE_READABLE_ZOOM && ["area-relation", "trunk"].includes(route.type);
+    const width = Math.min(280, Math.max(80, route.label.length * 7.2 + 20));
+    const height = 26;
+    const scale = Math.min(routeLabelScale(viewport.zoom, overview), route.maxLabelScale || Infinity);
+    if (viewport.zoom * scale * ROUTE_LABEL_FONT_SIZE < 10.5) continue;
     const visualWidth = width * scale;
     const visualHeight = height * scale;
-    let safe = true;
-    let point = labelCandidates(route.points, visualWidth).find((candidate) => {
+    const point = labelCandidates(route.points, visualWidth).find((candidate) => {
       const box = {
         x: candidate.x - visualWidth / 2,
         y: candidate.y - visualHeight / 2,
         width: visualWidth,
         height: visualHeight,
       };
-      const margin = 8 / viewport.zoom;
+      const margin = 16 / viewport.zoom;
       const inside = box.x >= visible.x + margin
         && box.y >= visible.y + margin
         && box.x + box.width <= visible.x + visible.width - margin
         && box.y + box.height <= visible.y + visible.height - margin;
       return inside
-        && !obstacles.some((item) => rectanglesOverlap(box, item, 5))
-        && !occupied.some((item) => rectanglesOverlap(box, item, 10));
+        && !obstacles.some((item) => rectanglesOverlap(box, item, 12 / viewport.zoom))
+        && !occupied.some((item) => rectanglesOverlap(box, item, 16 / viewport.zoom));
     });
-
-    if (!point) {
-      safe = false;
-      const segments = route.points.slice(1).map((to, index) => ({
-        from: route.points[index],
-        to,
-        length: Math.hypot(to.x - route.points[index].x, to.y - route.points[index].y),
-      })).sort((a, b) => b.length - a.length);
-      point = segments
-        .flatMap((segment) => [.5, .25, .75].map((fraction) => ({
-          x: segment.from.x + (segment.to.x - segment.from.x) * fraction,
-          y: segment.from.y + (segment.to.y - segment.from.y) * fraction,
-        })))
-        .find((candidate) => candidate.x >= visible.x
-          && candidate.y >= visible.y
-          && candidate.x <= visible.x + visible.width
-          && candidate.y <= visible.y + visible.height);
-      if (!point && segments[0]) {
-        point = {
-          x: (segments[0].from.x + segments[0].to.x) / 2,
-          y: (segments[0].from.y + segments[0].to.y) / 2,
-        };
-      }
-    }
 
     if (!point) continue;
     const box = {
@@ -95,8 +76,8 @@ export function placeRouteLabels(routes, viewport, size, obstacles) {
       width: visualWidth,
       height: visualHeight,
     };
-    if (safe) occupied.push(box);
-    result.set(route.id, { ...point, width, height, scale, safe });
+    occupied.push(box);
+    result.set(route.id, { ...point, width, height, scale, safe: true });
   }
   return result;
 }

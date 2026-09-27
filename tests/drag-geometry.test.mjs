@@ -7,6 +7,13 @@ import {
   pickDropContainer, translateRect,
 } from "../client/src/drag-geometry.js";
 
+test("an enclosing area cannot steal a partially entered nested group",()=>{
+  const area={id:"area",type:"area",depth:-1,rect:{x:0,y:0,width:1000,height:1000}};
+  const group={id:"group",type:"group",depth:0,rect:{x:400,y:400,width:300,height:300}};
+  const moved={x:350,y:450,width:200,height:100};
+  assert.equal(pickDropContainer(moved,[area,group],area.id)?.id,group.id);
+});
+
 test("group contours use their visible offset instead of the React Flow shell", () => {
   const rect = groupContourRect({ position: { x: 100, y: 200 }, style: { width: 500, height: 400 }, data: { contour: { left: -20, top: 10, width: 560, height: 430 } } });
   assert.deepEqual(rect, { x: 80, y: 210, width: 560, height: 430 });

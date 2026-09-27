@@ -19,5 +19,11 @@ export default defineConfig({
     sourcemap: false,
     target: "es2022",
     assetsDir: "assets",
+    rolldownOptions: {
+      input: {
+        app: path.resolve("client/index.html"),
+        designSystem: path.resolve("client/design-system.html"),
+      },
+    },
   },
 });
